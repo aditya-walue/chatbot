@@ -45,6 +45,7 @@ from typing import Any
 import frappe
 
 DEFAULT_THRESHOLD = 0.85
+HF_PROBE_SECONDS = 10
 # Flow's fine-tuned checkpoint, so Laya works without any site config.
 DEFAULT_MODEL_PATH = "aditya-walue/flow-laya-intent"
 INPUT_LOG_LIMIT = 500
@@ -370,12 +371,19 @@ def _use_onnx(path: str, backend: str = "", token: str | None = None) -> bool:
 		return backend == "onnx"
 	if os.path.isdir(path):
 		return is_onnx_checkpoint(path)
-	try:  # a Hugging Face repo id: look for the exported graph among its files
-		from huggingface_hub import HfApi
+	# A Hugging Face repo id: look for the exported graph among its files. Bounded, because this
+	# runs in the chat request and the call has no timeout of its own; a failure (offline, private
+	# repo without a token) propagates so route() logs it, rather than being read as "no ONNX".
+	from concurrent.futures import ThreadPoolExecutor
 
-		return ONNX_FILE in HfApi().list_repo_files(path, token=token)
-	except Exception:
-		return False
+	from huggingface_hub import HfApi
+
+	pool = ThreadPoolExecutor(max_workers=1)
+	try:
+		files = pool.submit(HfApi().list_repo_files, path, token=token).result(timeout=HF_PROBE_SECONDS)
+	finally:
+		pool.shutdown(wait=False)
+	return ONNX_FILE in files
 
 
 def _log(text: str, decision: RouteDecision) -> None:
