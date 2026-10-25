@@ -205,6 +205,25 @@ class TestLayaRouter(IntegrationTestCase):
 			self.assertTrue(laya_router._use_onnx(folder))
 			self.assertFalse(laya_router._use_onnx(folder, backend="laya"))
 
+	def test_unreachable_hub_is_an_error_not_a_cached_answer(self):
+		laya_router._backends.pop("finetuned:owner/repo", None)
+		with patch("huggingface_hub.HfApi.list_repo_files", side_effect=OSError("offline")):
+			with self.assertRaises(OSError):
+				laya_router._finetuned_agent("owner/repo")
+		self.assertNotIn("finetuned:owner/repo", laya_router._backends)
+
+	def test_hub_probe_that_hangs_gives_up(self):
+		import time
+
+		def hang(*args, **kwargs):
+			time.sleep(2)
+
+		with patch.object(laya_router, "HF_PROBE_SECONDS", 0.2), patch(
+			"huggingface_hub.HfApi.list_repo_files", side_effect=hang
+		):
+			with self.assertRaises(TimeoutError):
+				laya_router._use_onnx("owner/repo")
+
 	def test_hf_token_from_config_when_env_missing(self):
 		with patch.dict("os.environ", {}, clear=False):
 			import os
