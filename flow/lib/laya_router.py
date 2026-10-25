@@ -421,6 +421,10 @@ def _log(text: str, decision: RouteDecision) -> None:
 				"error": decision.error,
 			}
 		).insert(ignore_permissions=True)
+		# The chat stream stays open while the browser model answers, so without this the row
+		# only becomes visible (to laya_status and the metrics) when the whole request ends.
+		if not frappe.flags.in_test:
+			frappe.db.commit()
 	except Exception:
 		logger.exception("could not write Flow Route Log")
 
