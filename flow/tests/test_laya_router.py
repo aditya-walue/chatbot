@@ -8,6 +8,7 @@ import frappe
 from frappe.tests import IntegrationTestCase
 
 from flow.lib import laya_router
+from flow.lib.model_loader import LoadState, ModelFailed, ModelLoader
 
 TOOLS = {"count", "creation_steps", "assignment_steps", "status_steps", "error_diagnosis", "small_talk", "required_values", "create", "update"}
 
@@ -32,6 +33,22 @@ def _laya(intent, confidence, asks_count=0.0):
 	return router
 
 
+class _Clock:
+	def __init__(self):
+		self.now = 1000.0
+
+	def __call__(self):
+		return self.now
+
+
+class _Thread:
+	def __init__(self, alive=True):
+		self.alive = alive
+
+	def is_alive(self):
+		return self.alive
+
+
 class TestLayaRouter(IntegrationTestCase):
 	def setUp(self):
 		self._conf = {
@@ -50,6 +67,17 @@ class TestLayaRouter(IntegrationTestCase):
 		frappe.conf.flow_laya_backend = None
 		frappe.conf.flow_laya_enabled = True
 		frappe.conf.flow_laya_threshold = 0.8
+		# Each test gets its own loader, so none depends on what another loaded in this process.
+		self.clock, self.jobs = _Clock(), []
+		self.loader = ModelLoader(
+			name="Laya model",
+			retry_seconds=300,
+			clock=self.clock,
+			spawn=lambda run, name: self.jobs.append(run) or _Thread(),
+		)
+		patcher = patch.object(laya_router, "_loader", self.loader)
+		patcher.start()
+		self.addCleanup(patcher.stop)
 
 	def tearDown(self):
 		for k, v in self._conf.items():
@@ -205,12 +233,80 @@ class TestLayaRouter(IntegrationTestCase):
 			self.assertTrue(laya_router._use_onnx(folder))
 			self.assertFalse(laya_router._use_onnx(folder, backend="laya"))
 
-	def test_unreachable_hub_is_an_error_not_a_cached_answer(self):
-		laya_router._backends.pop("finetuned:owner/repo", None)
+	def test_unreachable_hub_is_an_error_then_a_failed_state_not_a_cached_answer(self):
 		with patch("huggingface_hub.HfApi.list_repo_files", side_effect=OSError("offline")):
 			with self.assertRaises(OSError):
 				laya_router._finetuned_agent("owner/repo")
-		self.assertNotIn("finetuned:owner/repo", laya_router._backends)
+			with self.assertRaises(ModelFailed):
+				laya_router._finetuned_agent("owner/repo")
+		self.assertEqual(self.loader.status("finetuned:owner/repo").state, LoadState.FAILED)
+
+	def test_backend_is_decided_again_when_a_failed_load_is_retried(self):
+		model = MagicMock()
+		with patch.object(laya_router, "_use_onnx", side_effect=[OSError("offline"), True]) as probe:
+			with self.assertRaises(OSError):
+				laya_router._finetuned_agent("owner/repo")
+			self.clock.now += 301
+			with self.assertRaises(laya_router.ModelLoading):
+				laya_router._finetuned_agent("owner/repo")
+			self.assertEqual(probe.call_count, 2)
+		with patch("flow.lib.laya_onnx.OnnxLaya", return_value=model):
+			self.jobs.pop()()
+		self.assertIs(laya_router._finetuned_agent("owner/repo"), model)
+
+	def test_status_before_during_and_after_loading(self):
+		frappe.conf.flow_laya_model_path = "owner/repo"
+		model = MagicMock()
+		status = laya_router.status()
+		self.assertEqual((status["load_state"], status["loaded_in_this_worker"]), ("not_loaded", False))
+		self.assertEqual(status["scope"], "this worker only")
+		self.assertIsInstance(status["worker_pid"], int)
+
+		with patch.object(laya_router, "_use_onnx", return_value=True):
+			with self.assertRaises(laya_router.ModelLoading):
+				laya_router._finetuned_agent("owner/repo")
+		self.clock.now += 12
+		status = laya_router.status()
+		self.assertEqual((status["load_state"], status["loaded_in_this_worker"]), ("loading", False))
+		self.assertEqual((status["load_seconds"], status["onnx_checkpoint"]), (12.0, True))
+
+		with patch("flow.lib.laya_onnx.OnnxLaya", return_value=model):
+			self.jobs.pop()()
+		status = laya_router.status()
+		self.assertEqual((status["load_state"], status["loaded_in_this_worker"]), ("ready", True))
+		self.assertIsNone(status["loading_error"])
+
+	def test_status_reports_a_failed_load_and_recovers_after_the_retry_wait(self):
+		frappe.conf.flow_laya_model_path = "owner/repo"
+		with patch.object(laya_router, "_use_onnx", return_value=True):
+			with self.assertRaises(laya_router.ModelLoading):
+				laya_router._finetuned_agent("owner/repo")
+			with patch("flow.lib.laya_onnx.OnnxLaya", side_effect=MemoryError("no room")):
+				self.jobs.pop()()
+			status = laya_router.status()
+			self.assertEqual(status["load_state"], "failed")
+			self.assertIn("MemoryError", status["loading_error"])
+			self.assertEqual(status["retry_in_seconds"], 300.0)
+			self.assertFalse(status["loaded_in_this_worker"])
+			with self.assertRaises(ModelFailed):
+				laya_router._finetuned_agent("owner/repo")
+
+			self.clock.now += 301
+			with self.assertRaises(laya_router.ModelLoading):
+				laya_router._finetuned_agent("owner/repo")
+			with patch("flow.lib.laya_onnx.OnnxLaya", return_value="model"):
+				self.jobs.pop()()
+		self.assertEqual(laya_router.status()["load_state"], "ready")
+		self.assertEqual(laya_router._finetuned_agent("owner/repo"), "model")
+
+	def test_a_failed_model_is_logged_as_an_error_and_falls_back(self):
+		frappe.conf.flow_laya_model_path = "owner/repo"
+		frappe.conf.flow_laya_model = None
+		with patch.object(laya_router, "_use_onnx", side_effect=OSError("offline")):
+			self.assertIsNone(laya_router.route("my invoice won't submit", TOOLS))
+		log = self._last_log()
+		self.assertEqual(log.outcome, "Error")
+		self.assertIn("offline", log.error)
 
 	def test_hub_probe_that_hangs_gives_up(self):
 		import time
@@ -223,6 +319,29 @@ class TestLayaRouter(IntegrationTestCase):
 		):
 			with self.assertRaises(TimeoutError):
 				laya_router._use_onnx("owner/repo")
+
+	def test_prefetch_downloads_a_hub_checkpoint_only_when_enabled(self):
+		frappe.conf.flow_laya_model = None
+		with patch("flow.lib.laya_onnx._resolve") as resolve:
+			frappe.conf.flow_laya_enabled = False
+			laya_router.prefetch()
+			resolve.assert_not_called()
+
+			frappe.conf.flow_laya_enabled = True
+			frappe.conf.flow_laya_model_path = "/tmp/local-checkpoint"
+			with patch("os.path.isdir", return_value=True):
+				laya_router.prefetch()
+			resolve.assert_not_called()
+
+			frappe.conf.flow_laya_model_path = "owner/repo"
+			laya_router.prefetch()
+			resolve.assert_called_once_with("owner/repo", laya_router._hf_token())
+
+	def test_prefetch_never_raises(self):
+		frappe.conf.flow_laya_model = None
+		frappe.conf.flow_laya_model_path = "owner/repo"
+		with patch("flow.lib.laya_onnx._resolve", side_effect=OSError("offline")):
+			laya_router.prefetch()
 
 	def test_hf_token_from_config_when_env_missing(self):
 		with patch.dict("os.environ", {}, clear=False):
@@ -237,43 +356,8 @@ class TestLayaRouter(IntegrationTestCase):
 			finally:
 				frappe.conf.flow_hf_token = None
 
-	def test_model_loads_in_background_without_blocking(self):
-		import threading
-
-		release = threading.Event()
-
-		def slow_load():
-			release.wait(5)
-			return "model"
-
-		key = "test:background"
-		laya_router._models.pop(key, None)
-		laya_router._loading.pop(key, None)
-		try:
-			with self.assertRaises(laya_router.ModelLoading):
-				laya_router._model(key, slow_load)
-			release.set()
-			for _ in range(50):
-				if key in laya_router._models:
-					break
-				threading.Event().wait(0.05)
-			self.assertEqual(laya_router._model(key, slow_load), "model")
-		finally:
-			laya_router._models.pop(key, None)
-			laya_router._loading.pop(key, None)
-
 	def test_loading_model_falls_back_quietly(self):
 		with patch.object(laya_router, "_router", side_effect=laya_router.ModelLoading("still loading")):
 			self.assertIsNone(laya_router.route("my invoice won't submit", TOOLS))
 		log = self._last_log()
 		self.assertEqual((log.outcome, log.reason), ("Fallback", "still loading"))
-
-	def test_pytorch_models_load_in_the_request(self):
-		key = "test:foreground"
-		laya_router._models.pop(key, None)
-		try:
-			self.assertEqual(laya_router._model(key, lambda: "model", background=False), "model")
-			self.assertNotIn(key, laya_router._loading)
-		finally:
-			laya_router._models.pop(key, None)
-
