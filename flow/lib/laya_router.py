@@ -37,12 +37,13 @@ from __future__ import annotations
 import logging
 import os
 import re
-import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
 import frappe
+
+from flow.lib.model_loader import LoadState, ModelLoader, ModelLoading, Plan
 
 DEFAULT_THRESHOLD = 0.85
 HF_PROBE_SECONDS = 10
@@ -299,30 +300,29 @@ def _number(answer: dict[str, Any] | None, key: str) -> float | None:
 	return float(answer[key])
 
 
-# The ONNX model loads in a background thread: the first download (1.6 GB for the fine-tuned
-# export) and load can take minutes, far past a web request's timeout, so a request never waits
-# for it; until it is ready, messages fall back to the chat model. PyTorch models (the `laya`
-# package) load in the request instead, as before: loading PyTorch in a background thread while
-# the web server keeps serving requests intermittently crashed the whole process (SIGSEGV).
+# The ONNX model loads in a background thread: the first download (440 MB for the int8 export,
+# 1.7 GB for the fp32 one) and load can take minutes, far past a web request's timeout, so a
+# request never waits for it; until it is ready, messages fall back to the chat model. PyTorch
+# models (the `laya` package) load in the request instead: loading PyTorch in a background thread
+# while the web server keeps serving requests intermittently crashed the whole process (SIGSEGV).
+# That rule is the `background` flag of the Plan returned below; see flow/lib/model_loader.py.
+# State is per worker process: `status()` describes the worker that answers it, no other.
 LOAD_RETRY_SECONDS = 300
-_models: dict[str, Any] = {}
-_loading: dict[str, dict[str, Any]] = {}
-_router_lock = threading.Lock()
-
-
-class ModelLoading(Exception):
-	"""The Laya model isn't loaded yet; this message goes to the chat model."""
+_loader = ModelLoader(name="Laya model", retry_seconds=LOAD_RETRY_SECONDS)
 
 
 def _router() -> Any:
 	"""Laya's Router, loaded once per worker (it downloads a checkpoint on first use)."""
 
-	def load():
-		from laya import Router  # optional dependency: ImportError means "unavailable"
+	def plan() -> Plan:
+		def load():
+			from laya import Router  # optional dependency: ImportError means "unavailable"
 
-		return Router()
+			return Router()
 
-	return _model("router", load, background=False)
+		return Plan(load, background=False, backend="laya")
+
+	return _loader.get("router", plan)
 
 
 def _finetuned_agent(path: str) -> Any:
@@ -330,55 +330,28 @@ def _finetuned_agent(path: str) -> Any:
 	when it ships laya.onnx (or flow_laya_backend says so), else with the `laya` package."""
 	# Site config is read here, in the request: the loading thread has no Frappe context.
 	backend, token = (frappe.conf.get("flow_laya_backend") or "").lower(), _hf_token()
-	key = f"finetuned:{path}"
-	if key not in _backends:
-		_backends[key] = _use_onnx(path, backend, token)
-	onnx = _backends[key]
 
-	def load():
-		if onnx:
-			from flow.lib.laya_onnx import OnnxLaya
+	def plan() -> Plan:
+		# Decided when a load starts, so a retry looks again (a repo that gained laya.onnx, a
+		# token that was added) instead of keeping the first answer for the life of the worker.
+		onnx = _use_onnx(path, backend, token)
 
-			return OnnxLaya(path, token=token)
-		import laya  # optional dependency (pulls in PyTorch)
+		def load():
+			if onnx:
+				from flow.lib.laya_onnx import OnnxLaya
 
-		return laya.load(path)
+				return OnnxLaya(path, token=token)
+			import laya  # optional dependency (pulls in PyTorch)
 
-	return _model(key, load, background=onnx)
+			return laya.load(path)
+
+		return Plan(load, background=onnx, backend="onnx" if onnx else "laya")
+
+	return _loader.get(_finetuned_key(path), plan)
 
 
-_backends: dict[str, bool] = {}
-
-
-def _model(key: str, load, background: bool = True) -> Any:
-	"""The loaded model for `key`. In the background: ModelLoading after starting (or while
-	running) its load in a thread; a failed load is reported, then retried after
-	LOAD_RETRY_SECONDS. Otherwise loaded in this request, once per worker."""
-	if key in _models:
-		return _models[key]
-	if not background:
-		with _router_lock:
-			if key not in _models:
-				_models[key] = load()
-		return _models[key]
-	with _router_lock:
-		state = _loading.get(key)
-		if state is None or (state["error"] and time.monotonic() - state["at"] > LOAD_RETRY_SECONDS):
-			state = _loading[key] = {"error": None, "at": time.monotonic()}
-
-			def run():
-				try:
-					_models[key] = load()
-				except Exception as e:
-					state["error"], state["at"] = f"{type(e).__name__}: {e}"[:900], time.monotonic()
-					logging.getLogger("flow.laya").warning("Laya model %s failed to load: %s", key, state["error"])
-
-			threading.Thread(target=run, name=f"flow-laya-load-{key}", daemon=True).start()
-	if key in _models:
-		return _models[key]
-	if state["error"]:
-		raise RuntimeError(f"Laya model failed to load: {state['error']}")
-	raise ModelLoading("Laya model is still loading in the background; the chat model answers meanwhile")
+def _finetuned_key(path: str) -> str:
+	return f"finetuned:{path}"
 
 
 def _hf_token() -> str | None:
@@ -469,12 +442,17 @@ def status() -> dict[str, Any]:
 		out["onnxruntime"] = onnxruntime.__version__
 	except Exception as e:
 		out["onnxruntime"] = f"missing: {type(e).__name__}"
+	# State is per worker process: this describes the worker that answered, not every worker.
+	out["worker_pid"] = os.getpid()
+	out["scope"] = "this worker only"
 	if path:
-		key = f"finetuned:{path}"
-		state = _loading.get(key) or {}
-		out["onnx_checkpoint"] = _backends.get(key)
-		out["loaded_in_this_worker"] = key in _models
-		out["loading_error"] = state.get("error")
+		load = _loader.status(_finetuned_key(path))
+		out["load_state"] = load.state.value
+		out["load_seconds"] = load.seconds
+		out["retry_in_seconds"] = load.retry_in
+		out["onnx_checkpoint"] = {"onnx": True, "laya": False}.get(load.backend)
+		out["loaded_in_this_worker"] = load.state is LoadState.READY
+		out["loading_error"] = load.error
 	last = frappe.get_all(
 		"Flow Route Log",
 		fields=["creation", "outcome", "intent", "confidence", "reason", "error"],
