@@ -46,8 +46,10 @@ import frappe
 
 DEFAULT_THRESHOLD = 0.85
 HF_PROBE_SECONDS = 10
-# Flow's fine-tuned checkpoint, so Laya works without any site config.
-DEFAULT_MODEL_PATH = "aditya-walue/flow-laya-intent"
+# Flow's fine-tuned checkpoint, int8-quantized: about 440 MB and 600 MB of RAM per worker, against
+# 1.7 GB and 1.6 GB for the fp32 export in aditya-walue/flow-laya-intent. Laya then works with no
+# site config.
+DEFAULT_MODEL_PATH = "aditya-walue/flow-laya-intent-int8"
 INPUT_LOG_LIMIT = 500
 
 # The intents shared with the other assistants on this bench, plus the two Flow also handles.
