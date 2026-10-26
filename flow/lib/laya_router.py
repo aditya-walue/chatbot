@@ -142,6 +142,27 @@ def _threshold() -> float:
 	return float(frappe.conf.get("flow_laya_threshold") or DEFAULT_THRESHOLD)
 
 
+def prefetch() -> None:
+	"""Download the ONNX checkpoint into this host's Hugging Face cache, so a worker's first Laya
+	message only has to open it (about a second) instead of waiting on the download. Run in the
+	background after a migrate; never raises."""
+	try:
+		path = _model_path()
+		if not enabled() or not path or os.path.isdir(path):
+			return
+		from flow.lib.laya_onnx import _resolve
+
+		_resolve(path, _hf_token())
+	except Exception:
+		frappe.logger("flow.laya", allow_site=True).warning("Laya checkpoint prefetch failed", exc_info=True)
+
+
+def enqueue_prefetch() -> None:
+	"""after_migrate hook: fetch the checkpoint in a background job, since it is hundreds of MB."""
+	if enabled():
+		frappe.enqueue("flow.lib.laya_router.prefetch", queue="long", timeout=1800)
+
+
 def route(text: str, available_tools: set[str]) -> tuple[str, dict[str, Any]] | None:
 	"""(tool name, arguments) to run for `text` without the chat model, or None to let the model
 	handle it. Never raises: any failure is logged and treated as a fallback."""

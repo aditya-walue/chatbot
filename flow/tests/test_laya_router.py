@@ -224,6 +224,29 @@ class TestLayaRouter(IntegrationTestCase):
 			with self.assertRaises(TimeoutError):
 				laya_router._use_onnx("owner/repo")
 
+	def test_prefetch_downloads_a_hub_checkpoint_only_when_enabled(self):
+		frappe.conf.flow_laya_model = None
+		with patch("flow.lib.laya_onnx._resolve") as resolve:
+			frappe.conf.flow_laya_enabled = False
+			laya_router.prefetch()
+			resolve.assert_not_called()
+
+			frappe.conf.flow_laya_enabled = True
+			frappe.conf.flow_laya_model_path = "/tmp/local-checkpoint"
+			with patch("os.path.isdir", return_value=True):
+				laya_router.prefetch()
+			resolve.assert_not_called()
+
+			frappe.conf.flow_laya_model_path = "owner/repo"
+			laya_router.prefetch()
+			resolve.assert_called_once_with("owner/repo", laya_router._hf_token())
+
+	def test_prefetch_never_raises(self):
+		frappe.conf.flow_laya_model = None
+		frappe.conf.flow_laya_model_path = "owner/repo"
+		with patch("flow.lib.laya_onnx._resolve", side_effect=OSError("offline")):
+			laya_router.prefetch()
+
 	def test_hf_token_from_config_when_env_missing(self):
 		with patch.dict("os.environ", {}, clear=False):
 			import os

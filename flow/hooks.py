@@ -59,6 +59,10 @@ scheduler_events = {
 }
 
 after_install = ["flow.assistant.default.sync_default_assistant"]
-after_migrate = ["flow.assistant.sync_builtin_assistant", "flow.assistant.default.sync_default_assistant"]
+after_migrate = [
+	"flow.assistant.sync_builtin_assistant",
+	"flow.assistant.default.sync_default_assistant",
+	"flow.lib.laya_router.enqueue_prefetch",
+]
 
 extend_bootinfo = "flow.boot.boot_session"
