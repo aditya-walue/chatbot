@@ -26,7 +26,7 @@ from urllib.parse import quote
 
 import frappe
 
-from flow.lib.tool import tool
+from flow.lib.tool import LayaRoute, tool
 
 # builtins imports this module to register its tools, so its helpers are imported inside the
 # functions below rather than at the top (which would be circular).
@@ -603,7 +603,11 @@ def loose_assignment(text: str) -> dict[str, Any] | None:
 	return match and assignment_arguments(match.group("item"), match.group("target"))
 
 
-@tool(final_answer=True, route=_route_assignment_steps)
+@tool(
+	final_answer=True,
+	route=_route_assignment_steps,
+	laya=LayaRoute("HOWTO", lambda text, signals: loose_assignment(text)),
+)
 def assignment_steps(
 	item: Annotated[str, 'DocType being assigned or linked, e.g. "Role" in "assign roles to employees".'],
 	target: Annotated[str, 'DocType it is assigned to, e.g. "Employee".'],
@@ -827,7 +831,11 @@ def _status_option(doctype: str, phrase: str) -> str | None:
 	return None
 
 
-@tool(final_answer=True, route=_route_status_steps)
+@tool(
+	final_answer=True,
+	route=_route_status_steps,
+	laya=LayaRoute("HOWTO", lambda text, signals: loose_status(text)),
+)
 def status_steps(
 	doctype: DocTypeArg,
 	status: Annotated[str, 'The status the user wants the record to reach, e.g. "Paid", "Completed".'],

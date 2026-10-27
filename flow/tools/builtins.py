@@ -11,7 +11,7 @@ from typing import Annotated, Any, Literal
 import frappe
 from frappe import _
 
-from flow.lib.tool import Tool, tool
+from flow.lib.tool import LayaRoute, LayaSignals, Tool, tool
 from flow.utils.safe_exec import safe_exec
 
 MAX_READ_LIMIT = 200
@@ -302,7 +302,11 @@ def _route_small_talk(text: str) -> dict[str, Any] | None:
 	return None
 
 
-@tool(final_answer=True, route=_route_small_talk)
+@tool(
+	final_answer=True,
+	route=_route_small_talk,
+	laya=LayaRoute("SMALL_TALK", lambda text, signals: {"kind": "greeting"}),
+)
 def small_talk(kind: Annotated[str, '"greeting" or "thanks".'] = "greeting") -> dict[str, Any]:
 	"""Reply to a greeting ("How can I help you today?") or thanks. No data is read."""
 	if kind == "thanks":
@@ -321,7 +325,11 @@ def small_talk(kind: Annotated[str, '"greeting" or "thanks".'] = "greeting") -> 
 	return result
 
 
-@tool(final_answer=True, route=lambda text: _route_required_values(text))
+@tool(
+	final_answer=True,
+	route=lambda text: _route_required_values(text),
+	laya=LayaRoute("CREATE", lambda text, signals: _laya_required_values(text)),
+)
 def required_values(doctype: DocTypeArg) -> dict[str, Any]:
 	"""Ask for the values needed to create a record of a DocType, with an example line to fill
 	in. Use when the user wants to create one but gave no values."""
@@ -357,7 +365,11 @@ def required_values(doctype: DocTypeArg) -> dict[str, Any]:
 	return {"doctype": doctype, "answer": answer}
 
 
-@tool(final_answer=True, route=lambda text: _route_creation_steps(text))
+@tool(
+	final_answer=True,
+	route=lambda text: _route_creation_steps(text),
+	laya=LayaRoute("HOWTO", lambda text, signals: _laya_creation_steps(text)),
+)
 def creation_steps(doctype: DocTypeArg) -> dict[str, Any]:
 	"""Steps to create a NEW record of a DocType by hand in the desk, from this site's required
 	fields. Use for "how do I create/add a <DocType>". Not for assigning, linking, status changes or
@@ -559,6 +571,61 @@ def _field_hint(field: Any, date_format: str = "yyyy-mm-dd") -> str:
 	return label
 
 
+CREATE_WORDS = {
+	"create", "creating", "add", "adding", "make", "making", "new", "register", "registering",
+	"enter", "entering", "raise", "raising", "record", "recording", "set", "setting",
+}
+FILLER_WORDS = {"a", "an", "the", "new", "one", "another", "up"}
+# "assign roles to employees", "link a contact to a customer": acting on records, not creating them.
+ASSIGN_WORDS = re.compile(
+	r"\b(assign|assigning|link|linking|attach|attaching|grant|granting|allocate|allocating|map|mapping|connect|connecting)\b",
+	re.IGNORECASE,
+)
+
+
+def _creation_target(text: str) -> str | None:
+	"""The DocType a how-to message asks to create ("guide me through adding a supplier" ->
+	Supplier), or None when it asks something else about it ("how to assign roles to employees",
+	"how do I add a role to an employee")."""
+	if ASSIGN_WORDS.search(text or ""):
+		return None
+	words = re.findall(r"[a-z][a-z\-]*", (text or "").lower())
+	for i, word in enumerate(words):
+		if word not in CREATE_WORDS or (word in ("set", "setting") and words[i + 1 : i + 2] != ["up"]):
+			continue
+		start = i + 1
+		while start < len(words) and words[start] in FILLER_WORDS:
+			start += 1
+		for size in range(min(4, len(words) - start), 0, -1):
+			doctype = _doctype_from_phrase(" ".join(words[start : start + size]))
+			if doctype:
+				# "add a role to an employee" adds to another record rather than creating one.
+				return None if words[start + size : start + size + 1] in (["to"], ["into"]) else doctype
+	return None
+
+
+def _laya_creation_steps(text: str) -> dict[str, Any] | None:
+	# HOWTO covers any "how do I ..." but creation_steps only answers how to create a record,
+	# so it takes the message only when it asks to create the DocType it names.
+	doctype = _creation_target(text)
+	return {"doctype": doctype} if doctype else None
+
+
+def _laya_required_values(text: str) -> dict[str, Any] | None:
+	# Laya never routes to create itself: only the read-only "what values do you need" reply for
+	# a request that names a DocType but gives no values.
+	parsed = _parse_create_request(text)
+	return {"doctype": parsed[0]} if parsed and not parsed[1] else None
+
+
+def _laya_count(text: str, signals: LayaSignals) -> dict[str, Any] | None:
+	# The same reading as the exact route; a breakdown or scope it can't map to a field goes to
+	# the chat model rather than becoming a plain total.
+	from flow.tools.answers import count_arguments
+
+	return count_arguments(text) if signals.asks_count >= signals.threshold else None
+
+
 COUNT_NAMES_LIMIT = 20
 
 
@@ -566,6 +633,7 @@ COUNT_NAMES_LIMIT = 20
 	final_answer=True,
 	precheck=lambda args, context=None: _precheck_query(args),
 	route=lambda text: _route_count(text),
+	laya=LayaRoute("RECORD_LOOKUP", lambda text, signals: _laya_count(text, signals)),
 )
 def count(
 	doctype: DocTypeArg,

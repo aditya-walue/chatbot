@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -206,8 +205,10 @@ def _classify(text: str, decision: RouteDecision) -> None:
 
 
 def _decide(text: str, decision: RouteDecision, available: set[str]) -> None:
-	"""Pick a read-only Flow tool for a confident, simple request; otherwise fall back."""
-	from flow.tools.builtins import _find_doctype_in_text, _parse_create_request
+	"""Pick a read-only Flow tool for a confident, simple request; otherwise fall back. Which tool
+	takes which intent, and how it reads the message, is declared on the tool (Tool.laya)."""
+	from flow.lib.tool import LayaSignals
+	from flow.tools.builtins import BUILTIN_TOOLS
 
 	threshold = _threshold()
 	if decision.confidence < threshold:
@@ -215,89 +216,20 @@ def _decide(text: str, decision: RouteDecision, available: set[str]) -> None:
 		return
 
 	intent = decision.intent
-	tool: str | None = None
-	arguments: dict[str, Any] | None = None
-	if intent == "TROUBLESHOOTING":
-		tool, arguments = "error_diagnosis", {"error": text}
-	elif intent == "SMALL_TALK":
-		tool, arguments = "small_talk", {"kind": "greeting"}
-	elif intent == "HOWTO":
-		# HOWTO covers any "how do I ..." but creation_steps only answers how to create a record,
-		# so route only when the message asks to create the DocType it names.
-		doctype = _creation_target(text)
-		if doctype:
-			tool, arguments = "creation_steps", {"doctype": doctype}
-		else:
-			from flow.tools.answers import loose_assignment, loose_status
-			from flow.tools.web import add_to_arguments
-
-			# Site-specific answers first; "how to add X to Y" for anything else is a docs question.
-			for name, find in (
-				("assignment_steps", loose_assignment),
-				("status_steps", loose_status),
-				("docs_howto", add_to_arguments),
-			):
-				arguments = find(text)
-				if arguments:
-					tool = name
-					break
-	elif intent == "RECORD_LOOKUP" and (decision.asks_count or 0) >= threshold:
-		from flow.tools.answers import count_arguments
-
-		# The same reading as the exact route; a breakdown or scope it can't map to a field goes
-		# to the chat model rather than becoming a plain total.
-		arguments = count_arguments(text)
-		tool = "count" if arguments else None
-	elif intent == "CREATE":
-		# Laya never routes to create itself: only the read-only "what values do you need"
-		# reply for a request that names a DocType but gives no values.
-		parsed = _parse_create_request(text)
-		if parsed and not parsed[1]:
-			tool, arguments = "required_values", {"doctype": parsed[0]}
-
-	if not tool:
-		decision.reason = f"{intent}: no direct Flow path for this request"
-		return
-	if tool not in available:
-		decision.reason = f"{intent}: tool {tool} isn't enabled for this agent"
-		return
-	decision.outcome, decision.tool, decision.arguments = "Routed", tool, arguments
-	decision.reason = f"{intent} at {decision.confidence:.2f}"
-
-
-CREATE_WORDS = {
-	"create", "creating", "add", "adding", "make", "making", "new", "register", "registering",
-	"enter", "entering", "raise", "raising", "record", "recording", "set", "setting",
-}
-FILLER_WORDS = {"a", "an", "the", "new", "one", "another", "up"}
-# "assign roles to employees", "link a contact to a customer": acting on records, not creating them.
-ASSIGN_WORDS = re.compile(
-	r"\b(assign|assigning|link|linking|attach|attaching|grant|granting|allocate|allocating|map|mapping|connect|connecting)\b",
-	re.IGNORECASE,
-)
-
-
-def _creation_target(text: str) -> str | None:
-	"""The DocType a how-to message asks to create ("guide me through adding a supplier" ->
-	Supplier), or None when it asks something else about it ("how to assign roles to employees",
-	"how do I add a role to an employee")."""
-	from flow.tools.builtins import _doctype_from_phrase
-
-	if ASSIGN_WORDS.search(text or ""):
-		return None
-	words = re.findall(r"[a-z][a-z\-]*", (text or "").lower())
-	for i, word in enumerate(words):
-		if word not in CREATE_WORDS or (word in ("set", "setting") and words[i + 1 : i + 2] != ["up"]):
+	signals = LayaSignals(asks_count=decision.asks_count or 0.0, threshold=threshold)
+	for tool in BUILTIN_TOOLS:
+		if not tool.laya or tool.laya.intent != intent:
 			continue
-		start = i + 1
-		while start < len(words) and words[start] in FILLER_WORDS:
-			start += 1
-		for size in range(min(4, len(words) - start), 0, -1):
-			doctype = _doctype_from_phrase(" ".join(words[start : start + size]))
-			if doctype:
-				# "add a role to an employee" adds to another record rather than creating one.
-				return None if words[start + size : start + size + 1] in (["to"], ["into"]) else doctype
-	return None
+		arguments = tool.laya.arguments(text, signals)
+		if not arguments:
+			continue
+		if tool.name not in available:
+			decision.reason = f"{intent}: tool {tool.name} isn't enabled for this agent"
+			return
+		decision.outcome, decision.tool, decision.arguments = "Routed", tool.name, arguments
+		decision.reason = f"{intent} at {decision.confidence:.2f}"
+		return
+	decision.reason = f"{intent}: no direct Flow path for this request"
 
 
 def _number(answer: dict[str, Any] | None, key: str) -> float | None:

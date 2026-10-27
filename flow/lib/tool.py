@@ -22,6 +22,24 @@ _PRIMITIVE_SCHEMAS: dict[type, dict[str, str]] = {
 }
 
 
+@dataclass(frozen=True)
+class LayaSignals:
+	"""What Laya said about a message besides its intent, for a tool deciding whether to take it."""
+
+	asks_count: float = 0.0
+	threshold: float = 0.0
+
+
+@dataclass(frozen=True)
+class LayaRoute:
+	"""A tool's claim on a message Laya classified as `intent`: `arguments` reads the message and
+	returns the call's arguments, or None to pass. Tools are asked in registry order, so one that
+	answers a narrower request is listed before one that answers a broader one. Read-only tools only."""
+
+	intent: str
+	arguments: Callable[[str, LayaSignals], dict[str, Any] | None]
+
+
 @dataclass
 class Tool:
 	name: str
@@ -45,6 +63,8 @@ class Tool:
 	# Recognises a user message this tool unmistakably answers ("how many employees?") and
 	# returns the arguments to call it with, or None. Routed calls skip the model's guess.
 	route: Callable[[str], dict[str, Any] | None] | None = None
+	# Lets the optional Laya classifier send a message here (see LayaRoute).
+	laya: LayaRoute | None = None
 
 	def __post_init__(self) -> None:
 		self._validated = validate_call(config=ConfigDict(arbitrary_types_allowed=True))(self.func)
@@ -86,6 +106,7 @@ def tool(
 	final_answer: bool = False,
 	redirect: Callable[[dict[str, Any]], tuple[str, dict[str, Any]] | None] | None = None,
 	route: Callable[[str], dict[str, Any] | None] | None = None,
+	laya: LayaRoute | None = None,
 ) -> Tool | Callable[[Callable[..., Any]], Tool]:
 	def wrap(f: Callable[..., Any]) -> Tool:
 		if not callable(f):
@@ -101,6 +122,7 @@ def tool(
 			final_answer=final_answer,
 			redirect=redirect,
 			route=route,
+			laya=laya,
 		)
 
 	return wrap(func) if func is not None else wrap
