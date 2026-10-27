@@ -1777,6 +1777,18 @@ BUILTIN_TOOLS: list[Tool] = [
 	assignment_steps,
 	status_steps,
 	role_permissions,
+def retired_builtin(tool_doc: Any) -> bool:
+	"""Whether a Flow Tool row is for a builtin that is no longer in BUILTIN_TOOLS (switched off or
+	removed). Its row stays until the next sync, so an agent skips it meanwhile instead of still
+	offering a tool the code has retired."""
+	path = getattr(tool_doc, "import_path", None) or ""
+	return (
+		bool(getattr(tool_doc, "is_system_generated", 0))
+		and path.startswith("flow.tools.builtins.")
+		and tool_doc.name not in {t.name for t in BUILTIN_TOOLS}
+	)
+
+
 	frappe_docs,
 	docs_howto,
 	web_search,

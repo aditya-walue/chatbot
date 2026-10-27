@@ -625,6 +625,33 @@ class TestUpdateRedirect(IntegrationTestCase):
 
 
 
+class TestRetiredBuiltin(IntegrationTestCase):
+	def test_a_builtin_row_the_code_no_longer_lists_is_retired(self):
+		from types import SimpleNamespace
+
+		from flow.tools.builtins import retired_builtin
+
+		def row(name, path="flow.tools.builtins.x", system=1):
+			return SimpleNamespace(name=name, import_path=path, is_system_generated=system)
+
+		self.assertTrue(retired_builtin(row("creation_steps")))  # switched off in BUILTIN_TOOLS
+		self.assertFalse(retired_builtin(row("count")))
+		# Only builtin rows made by the sync: a site's own imported tool is never retired.
+		self.assertFalse(retired_builtin(row("creation_steps", system=0)))
+		self.assertFalse(retired_builtin(row("my_tool", path="my_app.tools.my_tool")))
+
+	def test_an_agent_does_not_offer_a_retired_tool_before_the_next_sync(self):
+		from flow.assistant.default import DEFAULT_AGENT_TITLE
+
+		if not frappe.db.exists("Flow Agent", DEFAULT_AGENT_TITLE):
+			self.skipTest("default agent not set up")
+		agent = frappe.get_doc("Flow Agent", DEFAULT_AGENT_TITLE)
+		agent.append("tools", {"tool": "creation_steps"})
+		names = [t.name for t in agent._resolve_tools()]
+		self.assertNotIn("creation_steps", names)
+		self.assertIn("count", names)
+
+
 class TestRouting(IntegrationTestCase):
 	def test_routes_recognise_unmistakable_requests(self):
 		from flow.tools.builtins import _route_count, _route_creation_steps
