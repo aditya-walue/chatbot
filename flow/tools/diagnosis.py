@@ -22,7 +22,7 @@ from urllib.parse import quote
 
 import frappe
 
-from flow.lib.tool import tool
+from flow.lib.tool import LayaRoute, tool
 
 SOURCE_EXTENSIONS = (".py", ".js", ".vue", ".ts")
 # Generated bundles, dependencies and tests: matches there are noise, not where an error is raised.
@@ -181,7 +181,11 @@ def _route_error(text: str) -> dict[str, Any] | None:
 	return {"error": text}
 
 
-@tool(final_answer=True, route=_route_error)
+@tool(
+	final_answer=True,
+	route=_route_error,
+	laya=LayaRoute("TROUBLESHOOTING", lambda text, signals: {"error": text}),
+)
 def error_diagnosis(
 	error: Annotated[str, "The error message exactly as the user pasted it, including any traceback."],
 ) -> dict[str, Any]:

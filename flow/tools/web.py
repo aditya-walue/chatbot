@@ -23,7 +23,7 @@ from urllib.parse import parse_qs, urlparse
 
 import frappe
 
-from flow.lib.tool import tool
+from flow.lib.tool import LayaRoute, tool
 
 SEARCH_URL = "https://html.duckduckgo.com/html/"
 DOCS_HOST = "docs.frappe.io"
@@ -149,7 +149,7 @@ def add_to_arguments(text: str) -> dict[str, Any] | None:
 	return {"topic": " ".join(words)} if words else None
 
 
-@tool(final_answer=True)
+@tool(final_answer=True, laya=LayaRoute("HOWTO", lambda text, signals: add_to_arguments(text)))
 def docs_howto(
 	topic: Annotated[str, 'Search words for the docs, e.g. "add tax component sales invoice".'],
 ) -> dict[str, Any]:

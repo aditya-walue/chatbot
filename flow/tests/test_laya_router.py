@@ -9,6 +9,7 @@ from frappe.tests import IntegrationTestCase
 
 from flow.lib import laya_router
 from flow.lib.model_loader import LoadState, ModelFailed, ModelLoader
+from flow.lib.tool import LayaRoute, tool
 
 TOOLS = {"count", "creation_steps", "assignment_steps", "status_steps", "docs_howto", "error_diagnosis", "small_talk", "required_values", "create", "update"}
 
@@ -174,6 +175,60 @@ class TestLayaRouter(IntegrationTestCase):
 	def test_howto_that_is_not_add_to_still_falls_back(self):
 		self.assertIsNone(self._route(_laya("HOWTO", 0.95), "how does a purchase order get cancelled"))
 		self.assertIn("no direct Flow path", self._last_log().reason)
+
+	def test_the_tool_map_is_declared_on_the_tools(self):
+		from flow.tools import builtins
+
+		known = set(laya_router.INTENTS) | set(laya_router.FLOW_INTENTS)
+		declared = {t.name: t.laya.intent for t in builtins.BUILTIN_TOOLS if t.laya}
+		self.assertTrue(declared)
+		self.assertLessEqual(set(declared.values()), known)
+
+	def test_a_tool_that_declares_an_intent_is_routed_to_without_touching_the_router(self):
+		from flow.tools import builtins
+
+		@tool(laya=LayaRoute("DEFINITION", lambda text, signals: {"word": text}))
+		def define(word: str) -> str:
+			"""Define a word."""
+			return word
+
+		with patch.object(builtins, "BUILTIN_TOOLS", [*builtins.BUILTIN_TOOLS, define]):
+			self.assertEqual(self._route(_laya("DEFINITION", 0.9), "what is a widget", TOOLS | {"define"}), ("define", {"word": "what is a widget"}))
+			self.assertIsNone(self._route(_laya("DEFINITION", 0.9), "what is a widget", TOOLS))
+			self.assertIn("define isn't enabled", self._last_log().reason)
+
+	def test_the_first_tool_that_reads_the_message_takes_it(self):
+		from flow.tools import builtins
+
+		@tool(laya=LayaRoute("DEFINITION", lambda text, signals: None))
+		def passes(word: str) -> str:
+			"""Passes."""
+			return word
+
+		@tool(laya=LayaRoute("DEFINITION", lambda text, signals: {"word": "second"}))
+		def takes(word: str) -> str:
+			"""Takes."""
+			return word
+
+		with patch.object(builtins, "BUILTIN_TOOLS", [passes, takes]):
+			self.assertEqual(self._route(_laya("DEFINITION", 0.9), "anything", {"passes", "takes"}), ("takes", {"word": "second"}))
+
+	def test_a_tool_sees_how_sure_laya_was_that_the_message_asks_for_a_count(self):
+		seen = []
+
+		def read_signals(text, signals):
+			seen.append((signals.asks_count, signals.threshold))
+
+		from flow.tools import builtins
+
+		@tool(laya=LayaRoute("RECORD_LOOKUP", read_signals))
+		def peek(word: str) -> str:
+			"""Peek."""
+			return word
+
+		with patch.object(builtins, "BUILTIN_TOOLS", [peek]):
+			self._route(_laya("RECORD_LOOKUP", 0.9, asks_count=0.7), "how many things", {"peek"})
+		self.assertEqual(seen, [(0.7, 0.8)])
 
 	def test_howto_routes_only_requests_to_create(self):
 		self.assertEqual(self._route(_laya("HOWTO", 0.9), "walk me through setting up a new todo"), ("creation_steps", {"doctype": "ToDo"}))
