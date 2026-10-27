@@ -313,6 +313,100 @@ class TestAgentLimits(UnitTestCase):
 			agent.run("hi")
 		self.assertIn("max_iterations", str(ctx.exception))
 
+	def _lookup_tool(self):
+		@tool
+		def lookup(query: str) -> dict:
+			"""Look something up."""
+			return {"query": query, "page": {"title": "Guide", "url": "https://docs.example/guide", "text": "Step one. Step two."}}
+
+		return lookup
+
+	def _search(self, i):
+		return _tool_call("lookup", {"query": f"words {i}"}, call_id=f"c{i}")
+
+	def test_same_tool_every_step_ends_with_the_docs_found(self):
+		model = FakeModel([self._search(i) for i in range(1, 9)])
+		agent = Agent(model=model, tools=[self._lookup_tool()], max_iterations=8)
+
+		result = agent.run("how do I do this")
+
+		self.assertEqual(result.iterations, 3)
+		self.assertEqual(len(model.calls), 3)
+		self.assertIn("Step one. Step two.", result.output)
+		self.assertIn("https://docs.example/guide", result.output)
+
+	def test_stream_same_tool_every_step_ends_with_the_docs_found(self):
+		model = FakeModel([self._search(i) for i in range(1, 9)])
+		agent = Agent(model=model, tools=[self._lookup_tool()], max_iterations=8)
+
+		events = list(agent.run("how do I do this", stream=True))
+
+		self.assertEqual(len(model.calls), 3)
+		self.assertIsInstance(events[-1], Done)
+		self.assertIn("https://docs.example/guide", events[-1].result.output)
+		self.assertTrue(any(isinstance(e, TextChunk) and "Step one" in e.text for e in events))
+
+	def test_different_tools_between_steps_do_not_count_as_a_loop(self):
+		@tool
+		def ping() -> str:
+			"""Ping."""
+			return "pong"
+
+		model = FakeModel(
+			[
+				self._search(1),
+				_tool_call("ping", {}, call_id="p1"),
+				self._search(2),
+				_tool_call("ping", {}, call_id="p2"),
+				_final("done"),
+			]
+		)
+		agent = Agent(model=model, tools=[self._lookup_tool(), ping], max_iterations=8)
+
+		self.assertEqual(agent.run("hi").output, "done")
+
+	def test_running_out_of_steps_returns_the_docs_found_instead_of_raising(self):
+		@tool
+		def ping() -> str:
+			"""Ping."""
+			return "pong"
+
+		model = FakeModel([self._search(1), _tool_call("ping", {}, call_id="p1"), _tool_call("ping", {}, call_id="p2")])
+		agent = Agent(model=model, tools=[self._lookup_tool(), ping], max_iterations=3)
+
+		result = agent.run("how do I do this")
+
+		self.assertIn("https://docs.example/guide", result.output)
+
+	def test_search_results_without_a_docs_page_are_listed(self):
+		@tool
+		def lookup(query: str) -> dict:
+			"""Search."""
+			return {"query": query, "results": [{"title": "A page", "url": "https://web.example/a"}]}
+
+		model = FakeModel([_tool_call("lookup", {"query": f"w{i}"}, call_id=f"c{i}") for i in range(1, 6)])
+		agent = Agent(model=model, tools=[lookup], max_iterations=5)
+
+		self.assertIn("- A page: https://web.example/a", agent.run("hi").output)
+
+	def test_docs_from_an_earlier_turn_are_not_shown_for_a_new_question(self):
+		@tool
+		def ping() -> str:
+			"""Ping."""
+			return "pong"
+
+		earlier = [
+			{"role": "user", "content": "first question"},
+			{"role": "tool", "tool_call_id": "old", "content": json.dumps({"page": {"url": "https://docs.example/old", "text": "old"}})},
+			{"role": "assistant", "content": "first answer"},
+			{"role": "user", "content": "second question"},
+		]
+		model = FakeModel([_tool_call("ping", {}, call_id=f"p{i}") for i in range(1, 4)])
+		agent = Agent(model=model, tools=[ping], max_iterations=3)
+
+		with self.assertRaises(RuntimeError):
+			agent.run(earlier)
+
 	def test_max_iterations_must_be_positive(self):
 		with self.assertRaises(ValueError):
 			Agent(model=FakeModel([]), max_iterations=0)

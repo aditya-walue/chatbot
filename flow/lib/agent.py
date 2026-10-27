@@ -22,6 +22,8 @@ if TYPE_CHECKING:
 
 DEFAULT_MAX_ITERATIONS = 20
 MAX_FAILED_STEPS = 2
+MAX_SAME_TOOL_STEPS = 3
+RESEARCH_TEXT_LIMIT = 1500
 STUCK_MESSAGE = (
 	"Sorry, I couldn't put that request together correctly. Could you rephrase it, or say "
 	"which record and fields you mean?"
@@ -277,6 +279,7 @@ class Agent:
 
 		routed = self._routed_response(messages) if route else None
 		failed_streak = 0
+		same_tool_streak, last_tools = 0, frozenset()
 		for iteration in range(1, self.max_iterations + 1):
 			if routed is not None:
 				response, routed = routed, None
@@ -326,6 +329,13 @@ class Agent:
 			answer = None if questions else self._final_answer(results)
 			if answer is None and not questions and failed_streak >= MAX_FAILED_STEPS:
 				answer = STUCK_MESSAGE
+			# The same tool step after step (a small model re-searching the docs with new words)
+			# is a loop; once there is something to show, show it instead of searching again.
+			step_tools = frozenset(c.name for c in response.tool_calls)
+			same_tool_streak = same_tool_streak + 1 if step_tools == last_tools else 1
+			last_tools = step_tools
+			if answer is None and not questions and same_tool_streak >= MAX_SAME_TOOL_STEPS:
+				answer = _research_answer(messages)
 			if answer is not None:
 				messages.append({"role": "assistant", "content": answer})
 				return RunResult(
@@ -347,7 +357,18 @@ class Agent:
 					questions=questions,
 				)
 
-		raise RuntimeError(f"Agent {self.name!r} exceeded max_iterations ({self.max_iterations})")
+		# Out of steps: show the best docs or search result gathered so far rather than an error.
+		answer = _research_answer(messages)
+		if answer is None:
+			raise RuntimeError(f"Agent {self.name!r} exceeded max_iterations ({self.max_iterations})")
+		messages.append({"role": "assistant", "content": answer})
+		return RunResult(
+			output=answer,
+			messages=messages,
+			tool_calls=executed_calls,
+			iterations=self.max_iterations,
+			usage=usage_total,
+		)
 
 	def _loop_stream(
 		self,
@@ -385,6 +406,7 @@ class Agent:
 
 		routed = self._routed_response(messages) if route else None
 		failed_streak = 0
+		same_tool_streak, last_tools = 0, frozenset()
 		for iteration in range(1, self.max_iterations + 1):
 			if routed is not None:
 				response, routed = routed, None
@@ -430,6 +452,13 @@ class Agent:
 			answer = None if questions else self._final_answer(results)
 			if answer is None and not questions and failed_streak >= MAX_FAILED_STEPS:
 				answer = STUCK_MESSAGE
+			# The same tool step after step (a small model re-searching the docs with new words)
+			# is a loop; once there is something to show, show it instead of searching again.
+			step_tools = frozenset(c.name for c in response.tool_calls)
+			same_tool_streak = same_tool_streak + 1 if step_tools == last_tools else 1
+			last_tools = step_tools
+			if answer is None and not questions and same_tool_streak >= MAX_SAME_TOOL_STEPS:
+				answer = _research_answer(messages)
 			if answer is not None:
 				yield TextChunk(text=answer)
 				messages.append({"role": "assistant", "content": answer})
@@ -458,7 +487,21 @@ class Agent:
 				)
 				return
 
-		raise RuntimeError(f"Agent {self.name!r} exceeded max_iterations ({self.max_iterations})")
+		# Out of steps: show the best docs or search result gathered so far rather than an error.
+		answer = _research_answer(messages)
+		if answer is None:
+			raise RuntimeError(f"Agent {self.name!r} exceeded max_iterations ({self.max_iterations})")
+		yield TextChunk(text=answer)
+		messages.append({"role": "assistant", "content": answer})
+		yield Done(
+			result=RunResult(
+				output=answer,
+				messages=messages,
+				tool_calls=executed_calls,
+				iterations=self.max_iterations,
+				usage=usage_total,
+			)
+		)
 
 	def _redirect(self, call: ToolCall, tool: Tool, messages: list[dict[str, Any]] | None) -> Tool:
 		"""Swap a call the model aimed at the wrong tool for the right one (see Tool.redirect),
@@ -846,6 +889,31 @@ def _has_denial(answers: dict[str, Any]) -> bool:
 	"""A Deny answer halts the run — the user rejected an action, so stop rather than
 	continue. Approve and free-text (redirect) answers let the run proceed."""
 	return any(answer == "Deny" for answer in answers.values())
+
+
+def _research_answer(messages: list[dict[str, Any]]) -> str | None:
+	"""A reply built from the latest docs page or web results a lookup tool returned, or None when
+	there is none in this turn. The text is the tool's own result, so it stays live data."""
+	for message in reversed(messages):
+		if message.get("role") == "user":
+			break
+		if message.get("role") != "tool":
+			continue
+		try:
+			result = json.loads(message.get("content") or "")
+		except ValueError:
+			continue
+		if not isinstance(result, dict):
+			continue
+		page = result.get("page")
+		if isinstance(page, dict) and page.get("url") and (page.get("text") or page.get("snippet")):
+			text = str(page.get("text") or page["snippet"])[:RESEARCH_TEXT_LIMIT].rstrip()
+			return f"This is what the Frappe documentation says ({page.get('title') or 'page'}):\n\n{text}\n\nSource: {page['url']}"
+		found = [r for r in result.get("results") or [] if isinstance(r, dict) and r.get("url")]
+		if found:
+			lines = [f"- {r.get('title') or r['url']}: {r['url']}" for r in found]
+			return "I found these pages that may help:\n\n" + "\n".join(lines)
+	return None
 
 
 def _serialize_tool_result(result: Any) -> str:
