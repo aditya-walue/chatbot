@@ -229,12 +229,18 @@ def _decide(text: str, decision: RouteDecision, available: set[str]) -> None:
 			tool, arguments = "creation_steps", {"doctype": doctype}
 		else:
 			from flow.tools.answers import loose_assignment, loose_status
+			from flow.tools.web import add_to_arguments
 
-			arguments = loose_assignment(text)
-			tool = "assignment_steps" if arguments else None
-			if not arguments:
-				arguments = loose_status(text)
-				tool = "status_steps" if arguments else None
+			# Site-specific answers first; "how to add X to Y" for anything else is a docs question.
+			for name, find in (
+				("assignment_steps", loose_assignment),
+				("status_steps", loose_status),
+				("docs_howto", add_to_arguments),
+			):
+				arguments = find(text)
+				if arguments:
+					tool = name
+					break
 	elif intent == "RECORD_LOOKUP" and (decision.asks_count or 0) >= threshold:
 		from flow.tools.answers import count_arguments
 

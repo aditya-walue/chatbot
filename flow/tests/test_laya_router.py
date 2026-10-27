@@ -10,7 +10,7 @@ from frappe.tests import IntegrationTestCase
 from flow.lib import laya_router
 from flow.lib.model_loader import LoadState, ModelFailed, ModelLoader
 
-TOOLS = {"count", "creation_steps", "assignment_steps", "status_steps", "error_diagnosis", "small_talk", "required_values", "create", "update"}
+TOOLS = {"count", "creation_steps", "assignment_steps", "status_steps", "docs_howto", "error_diagnosis", "small_talk", "required_values", "create", "update"}
 
 
 def _laya(intent, confidence, asks_count=0.0):
@@ -146,6 +146,34 @@ class TestLayaRouter(IntegrationTestCase):
 	def test_howto_and_count_need_a_doctype(self):
 		self.assertEqual(self._route(_laya("HOWTO", 0.9), "guide me through adding a todo"), ("creation_steps", {"doctype": "ToDo"}))
 		self.assertIsNone(self._route(_laya("HOWTO", 0.9), "guide me through life"))
+
+	def test_howto_add_to_goes_to_the_docs_when_no_site_tool_fits(self):
+		result = self._route(_laya("HOWTO", 0.91), "how to add new tax component to the sales invoice?")
+		self.assertEqual(result, ("docs_howto", {"topic": "add new tax component sales invoice"}))
+		log = self._last_log()
+		self.assertEqual((log.outcome, log.tool), ("Routed", "docs_howto"))
+
+	def test_howto_add_to_keeps_the_site_tools_first(self):
+		# Creating a record and linking one record to another still use their own tools.
+		self.assertEqual(self._route(_laya("HOWTO", 0.92), "how do I add a new todo")[0], "creation_steps")
+		self.assertEqual(self._route(_laya("HOWTO", 0.92), "how do I add a role to a user")[0], "assignment_steps")
+
+	def test_howto_add_to_needs_confidence_and_the_tool(self):
+		text = "how to add new tax component to the sales invoice?"
+		self.assertIsNone(self._route(_laya("HOWTO", 0.5), text))
+		self.assertIn("below", self._last_log().reason)
+		# An agent without the tool falls back to the chat model, and the log says why.
+		self.assertIsNone(self._route(_laya("HOWTO", 0.95), text, tools=TOOLS - {"docs_howto"}))
+		self.assertIn("docs_howto isn't enabled", self._last_log().reason)
+
+	def test_only_howto_intent_reaches_the_docs_route(self):
+		text = "how to add new tax component to the sales invoice?"
+		self.assertIsNone(self._route(_laya("DEFINITION", 0.95), text))
+		self.assertIsNone(self._route(_laya("WORKFLOW", 0.95), text))
+
+	def test_howto_that_is_not_add_to_still_falls_back(self):
+		self.assertIsNone(self._route(_laya("HOWTO", 0.95), "how does a purchase order get cancelled"))
+		self.assertIn("no direct Flow path", self._last_log().reason)
 
 	def test_howto_routes_only_requests_to_create(self):
 		self.assertEqual(self._route(_laya("HOWTO", 0.9), "walk me through setting up a new todo"), ("creation_steps", {"doctype": "ToDo"}))

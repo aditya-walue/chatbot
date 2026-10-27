@@ -6,9 +6,12 @@
 - frappe_docs  the official documentation at docs.frappe.io (Frappe Framework, ERPNext, HR,
                CRM, Helpdesk, Cloud…), through that site's own search: the best page's text
 - web_search   the public web, when the documentation has nothing
+- docs_howto   one documentation lookup answered as-is, for "how to add X to Y" questions that
+               Laya routes (no chat-model call)
 
 Uses DuckDuckGo's HTML results page — no API key, but an unofficial endpoint that can rate-limit
-or change without notice. Only the query the model writes is sent; no record data. Site config
+or change without notice. Only the query is sent: the words the model writes, or for docs_howto
+the letters-only words of the user's question (a word with a digit, @ or . inside is dropped); no record data. Site config
 `flow_web_search_enabled` = 0 turns it off.
 """
 
@@ -107,6 +110,10 @@ def frappe_docs(
 	"""Look up the official Frappe / ERPNext docs (docs.frappe.io): how a feature works, steps,
 	what a setting means. Answer from the returned text in your own words and give its page link.
 	Try the site's own tools first for anything about this site's data."""
+	return _lookup_docs(query)
+
+
+def _lookup_docs(query: str) -> dict[str, Any]:
 	if _turned_off():
 		raise ValueError("Looking things up online is turned off on this site.")
 	query = " ".join(str(query or "").split())[:QUERY_LIMIT]
@@ -121,6 +128,46 @@ def frappe_docs(
 		"page": {**best, "text": _page_text(best["url"]) or best["snippet"]},
 		"more": [{"title": p["title"], "url": p["url"]} for p in pages[1:DOCS_MORE_LIMIT + 1]],
 	}
+
+
+ADD_VERBS = r"(?:add|attach|include|insert|put|apply)"
+ADD_TO = re.compile(rf"\b{ADD_VERBS}\b.+\b(?:to|into|in|on)\b\s+\S", re.I)
+QUESTION_WORDS = frozenset(
+	"how to do does can could i you we should would the a an my our me please tell steps way".split()
+)
+ANSWER_LIMIT = 1800
+
+
+def add_to_arguments(text: str) -> dict[str, Any] | None:
+	"""The docs search words for "how to add X to Y" (any wording that adds something to
+	something), or None. Only letters-only words are kept, so record IDs, emails and numbers in
+	the message are never sent out."""
+	if not isinstance(text, str) or not ADD_TO.search(text):
+		return None
+	tokens = (t.strip(".-") for t in re.split(r"[\s,;:!?()\"']+", text.lower()))
+	words = [t for t in tokens if re.fullmatch(r"[a-z][a-z\-]*", t) and t not in QUESTION_WORDS]
+	return {"topic": " ".join(words)} if words else None
+
+
+@tool(final_answer=True)
+def docs_howto(
+	topic: Annotated[str, 'Search words for the docs, e.g. "add tax component sales invoice".'],
+) -> dict[str, Any]:
+	"""Answer a "how to add X to Y" question from one look at the Frappe / ERPNext docs
+	(docs.frappe.io): the best page's text and its link. Use frappe_docs instead when you want
+	to read the page yourself."""
+	result = _lookup_docs(topic)
+	page = result.get("page")
+	if not page:
+		return result  # no answer: the chat model takes over (and may try web_search)
+	text = str(page.get("text") or page.get("snippet") or "")
+	if len(text) > ANSWER_LIMIT:
+		cut = text[:ANSWER_LIMIT]
+		text = cut[: cut.rfind("\n\n")] if "\n\n" in cut else cut
+	lines = [f"This is what the Frappe documentation says ({page.get('title') or 'page'}):", "", text.strip(), "", f"Source: {page['url']}"]
+	if result.get("more"):
+		lines += ["", "Related pages:"] + [f"- [{m['title']}]({m['url']})" for m in result["more"]]
+	return {**result, "answer": "\n".join(lines)}
 
 
 def _docs_search(query: str) -> list[dict[str, str]]:

@@ -273,6 +273,19 @@ class TestCountQuestions(IntegrationTestCase):
 		# A breakdown word that names no field is left to the chat model.
 		self.assertIsNone(count_arguments("how many todos per flavour"))
 
+	def test_count_with_an_existence_phrase_then_a_site_phrase(self):
+		from flow.tools.answers import count_arguments
+
+		for text in (
+			"how many todos are there in system?",
+			"how many todos are there in the system",
+			"how many todos do we have on the site",
+			"how many todos exist in the system",
+		):
+			self.assertEqual(count_arguments(text), {"doctype": "ToDo"}, text)
+		# "in the system" still isn't a module scope.
+		self.assertEqual(count_arguments("how many todos in the system"), {"doctype": "ToDo"})
+
 	def test_grouped_count_answer(self):
 		from flow.tools.builtins import count
 

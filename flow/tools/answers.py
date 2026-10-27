@@ -265,7 +265,8 @@ GROUP_WORDS = re.compile(
 	re.IGNORECASE,
 )
 COUNT_TAIL = re.compile(
-	r"\s+(?:are\s+there|is\s+there|do\s+(?:we|i)\s+have|we\s+have|exist|exists|present|"
+	r"\s+(?:(?:are\s+there|is\s+there|do\s+(?:we|i)\s+have|we\s+have|exist|exists|present)"
+	r"(?:\s+(?:in|on)\s+(?:the\s+)?(?:system|site))?|"
 	r"(?:are|is)\s+(?:in|on)\s+(?:the\s+)?(?:system|site)|in\s+(?:the\s+)?(?:system|site))$",
 	re.IGNORECASE,
 )

@@ -33,6 +33,7 @@ DEFAULT_AGENT_TOOLS = (
 	"status_steps",
 	"role_permissions",
 	"frappe_docs",
+	"docs_howto",
 	"web_search",
 )
 DEFAULT_AGENT_INSTRUCTIONS = """You answer questions about the user's ERPNext / Frappe data using tools.
