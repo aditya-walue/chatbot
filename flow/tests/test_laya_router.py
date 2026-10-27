@@ -2,6 +2,7 @@
 # License: MIT. See LICENSE
 
 import json
+import os
 from unittest.mock import MagicMock, patch
 
 import frappe
@@ -418,7 +419,23 @@ class TestLayaRouter(IntegrationTestCase):
 
 			frappe.conf.flow_laya_model_path = "owner/repo"
 			laya_router.prefetch()
-			resolve.assert_called_once_with("owner/repo", laya_router._hf_token())
+			resolve.assert_called_once_with("owner/repo", laya_router._hf_token(), laya_router._cache_dir())
+
+	def test_cache_dir_is_the_site_folder_unless_configured(self):
+		"""The default ~/.cache/huggingface isn't writable on Frappe Cloud, so the checkpoint goes to a
+		folder under the site (or the one in flow_laya_cache_dir), created when asked for."""
+		import tempfile
+
+		frappe.conf.flow_laya_cache_dir = None
+		default = laya_router._cache_dir()
+		self.assertEqual(default, frappe.get_site_path("private", "laya"))
+		self.assertTrue(os.path.isdir(default))
+
+		with tempfile.TemporaryDirectory() as tmp:
+			frappe.conf.flow_laya_cache_dir = os.path.join(tmp, "cache")
+			self.assertEqual(laya_router._cache_dir(), os.path.join(tmp, "cache"))
+			self.assertTrue(os.path.isdir(os.path.join(tmp, "cache")))
+		frappe.conf.flow_laya_cache_dir = None
 
 	def test_prefetch_never_raises(self):
 		frappe.conf.flow_laya_model = None

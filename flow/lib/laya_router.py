@@ -28,6 +28,8 @@ an optional override in site config (site_config.json):
                          environment variable can't be set (e.g. Frappe Cloud bench config)
     flow_laya_backend    "onnx" or "laya" to force the runtime for flow_laya_model_path (default:
                          ONNX when the checkpoint has laya.onnx)
+    flow_laya_cache_dir  where a downloaded checkpoint is kept (default: the site's private/laya
+                         folder, since ~/.cache isn't writable on Frappe Cloud)
 
 Every decision is logged as a Flow Route Log row (see `metrics` for the summary).
 """
@@ -152,7 +154,7 @@ def prefetch() -> None:
 			return
 		from flow.lib.laya_onnx import _resolve
 
-		_resolve(path, _hf_token())
+		_resolve(path, _hf_token(), _cache_dir())
 	except Exception:
 		frappe.logger("flow.laya", allow_site=True).warning("Laya checkpoint prefetch failed", exc_info=True)
 
@@ -267,7 +269,7 @@ def _finetuned_agent(path: str) -> Any:
 	"""The Flow fine-tuned checkpoint at `path`, loaded once per worker: on Flow's ONNX runner
 	when it ships laya.onnx (or flow_laya_backend says so), else with the `laya` package."""
 	# Site config is read here, in the request: the loading thread has no Frappe context.
-	backend, token = (frappe.conf.get("flow_laya_backend") or "").lower(), _hf_token()
+	backend, token, cache_dir = (frappe.conf.get("flow_laya_backend") or "").lower(), _hf_token(), _cache_dir()
 
 	def plan() -> Plan:
 		# Decided when a load starts, so a retry looks again (a repo that gained laya.onnx, a
@@ -278,7 +280,7 @@ def _finetuned_agent(path: str) -> Any:
 			if onnx:
 				from flow.lib.laya_onnx import OnnxLaya
 
-				return OnnxLaya(path, token=token)
+				return OnnxLaya(path, token=token, cache_dir=cache_dir)
 			import laya  # optional dependency (pulls in PyTorch)
 
 			return laya.load(path)
@@ -290,6 +292,15 @@ def _finetuned_agent(path: str) -> Any:
 
 def _finetuned_key(path: str) -> str:
 	return f"finetuned:{path}"
+
+
+def _cache_dir() -> str:
+	"""Where the checkpoint is downloaded: flow_laya_cache_dir, else the site's private folder.
+	The default ~/.cache/huggingface isn't writable for the web user on Frappe Cloud (PermissionError),
+	and the site folder persists across worker restarts and deploys."""
+	path = frappe.conf.get("flow_laya_cache_dir") or frappe.get_site_path("private", "laya")
+	os.makedirs(path, exist_ok=True)
+	return path
 
 
 def _hf_token() -> str | None:
