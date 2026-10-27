@@ -760,7 +760,7 @@ TOOL_GROUPS: tuple[tuple[re.Pattern, tuple[str, ...]], ...] = tuple(
 		(r"\b(how\b.*\b(mark|status|paid|submit|cancel|close)|mark\b.*\b(paid|status))\b", ("status_steps", "document_flow")),
 		(r"\b(how (do|to|can|should)|steps?|guide|procedure)\b", ("frappe_docs",)),
 		# Explain: roles and permissions
-		(r"\b(role|roles|permission|permissions|access rights?|privilege)\b", ("role_permissions", "explain_doctype")),
+		(r"\b(role|roles|permission|permissions|access|access rights?|privilege)\b", ("doctype_access", "role_permissions", "explain_doctype")),
 		# Explain: document workflow & lifecycle
 		(r"\b(after|next|process|flow|workflow|approv\w*|cycle|stage)\b", ("document_flow", "explain_doctype")),
 		# Explain: DocType definition
@@ -952,7 +952,7 @@ def _with_referenced_doctype(
 	order" while on an invoice) is left alone."""
 	match = REFERENCE.search(text or "")
 	if not match:
-		return text
+		return _with_access_subject(text, messages, page)
 	word = (match.group(2) or "").lower()
 	for doctype, name in _referents(messages[:-1], page):
 		names = doctype.lower().split()
@@ -964,6 +964,22 @@ def _with_referenced_doctype(
 		if match.group(1).lower() == "it":
 			return text[: match.start(1)] + f"the {target}" + text[match.end(1) :]
 		return text[: match.end(1)] + f" {target}" + text[match.end(1) :]
+	# "…in this system" names no record, so it doesn't count as a reference.
+	return _with_access_subject(text, messages, page)
+
+
+def _with_access_subject(text: str, messages: list[dict[str, Any]], page: dict[str, str] | None) -> str:
+	"""A question about who has access, that names no record type ("which user has the access in
+	this system?" after one about Sales Invoice), with the DocType talked about last spelled out
+	("... for Sales Invoice"); otherwise unchanged."""
+	from flow.tools.answers import ACCESS_WORDS, WHO_ASKS, _builtins
+
+	if not (WHO_ASKS.search(text or "") and ACCESS_WORDS.search(text or "")):
+		return text
+	if _builtins()._find_doctype_in_text(WHO_ASKS.sub(" ", text)):
+		return text
+	for doctype, _name in _referents(messages[:-1], page):
+		return f"{text.rstrip(' ?.!')} for {doctype}"
 	return text
 
 

@@ -983,6 +983,53 @@ class TestReferencedDocType(UnitTestCase):
 		self.assertEqual(_with_referenced_doctype(msgs[-1]["content"], msgs), "how do I cancel that order?")
 
 
+class TestAccessFollowUp(IntegrationTestCase):
+	"""A who-has-access question that names no record type means the one talked about last."""
+
+	def _history(self, doctype):
+		import json
+
+		return [
+			{"role": "user", "content": "who can create a sales invoice?"},
+			{"role": "tool", "tool_call_id": "c1", "content": json.dumps({"answer": "...", "doctype": doctype})},
+		]
+
+	def test_the_last_doctype_is_spelled_out(self):
+		from flow.lib.agent import _with_referenced_doctype
+
+		text = "which user has the access in this system?"
+		msgs = self._history("Sales Invoice") + [{"role": "user", "content": text}]
+		self.assertEqual(_with_referenced_doctype(text, msgs), "which user has the access in this system for Sales Invoice")
+
+	def test_the_open_page_comes_first(self):
+		from flow.lib.agent import _with_referenced_doctype
+
+		text = "who has access?"
+		msgs = self._history("Sales Invoice") + [{"role": "user", "content": text}]
+		self.assertEqual(_with_referenced_doctype(text, msgs, {"doctype": "Item", "name": ""}), "who has access for Item")
+
+	def test_a_message_that_names_a_doctype_or_is_not_about_access_is_left_alone(self):
+		from flow.lib.agent import _with_referenced_doctype
+
+		for text in ("who can create an item?", "show all customers", "how many users are there"):
+			msgs = self._history("Sales Invoice") + [{"role": "user", "content": text}]
+			self.assertEqual(_with_referenced_doctype(text, msgs), text)
+
+	def test_with_nothing_talked_about_yet_it_is_left_alone(self):
+		from flow.lib.agent import _with_referenced_doctype
+
+		text = "which user has the access in this system?"
+		self.assertEqual(_with_referenced_doctype(text, [{"role": "user", "content": text}]), text)
+
+	def test_the_follow_up_routes_to_doctype_access_without_a_model(self):
+		from flow.tools.answers import doctype_access
+
+		text = "which user has the access in this system?"
+		agent = Agent(model=FakeModel([]), tools=[doctype_access])
+		response = agent._routed_response(self._history("ToDo") + [{"role": "user", "content": text}])
+		self.assertEqual([(c.name, c.arguments) for c in response.tool_calls], [("doctype_access", {"doctype": "ToDo"})])
+
+
 class TestPageContext(IntegrationTestCase):
 	"""The desk page the user is on resolves "this" / "it" and is told to the model."""
 

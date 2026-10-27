@@ -1756,6 +1756,7 @@ def run_action(
 from flow.tools.answers import (  # noqa: E402
 	assignment_steps,
 	document_flow,
+	doctype_access,
 	explain_doctype,
 	role_permissions,
 	show_records,
@@ -1777,6 +1778,7 @@ BUILTIN_TOOLS: list[Tool] = [
 	assignment_steps,
 	status_steps,
 	role_permissions,
+	doctype_access,
 	frappe_docs,
 	docs_howto,
 	web_search,

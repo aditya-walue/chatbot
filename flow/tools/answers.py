@@ -1126,6 +1126,121 @@ def role_permissions(
 	return {"answer": "\n".join(lines), "role": role, "doctype": doctype}
 
 
+# ── doctype_access ─────────────────────────────────────────────────────────────────────────
+
+ACCESS_ROLES_LIMIT = 15
+ACCESS_USERS_PER_ROLE = 10
+# Who is asking "who"/"which user", and about access: the words that make a message a question
+# about who may do something, as opposed to a request to list a record type.
+WHO_ASKS = re.compile(r"\b(who|which\s+(?:users?|roles?|people|persons?)|what\s+(?:users?|roles?))\b", re.IGNORECASE)
+ACCESS_WORDS = re.compile(r"\b(access|permissions?|allowed|rights?|authori[sz]ed|can|able|permit(?:ted)?)\b", re.IGNORECASE)
+
+
+def _permission_rights() -> list[Any]:
+	"""The rights a permission rule can grant (read, write, create…), from DocPerm's own fields."""
+	return [f for f in frappe.get_meta("DocPerm").fields if f.fieldtype == "Check" and f.fieldname != "if_owner" and f.label]
+
+
+def _named_right(text: str) -> str | None:
+	"""The right a message names ("who can create…" -> "create"), by a DocPerm field's name or label."""
+	words = set(re.findall(r"[a-z]+", (text or "").lower()))
+	for field in _permission_rights():
+		if field.fieldname in words or (field.label or "").lower() in words:
+			return field.fieldname
+	return None
+
+
+def access_arguments(text: str) -> dict[str, Any] | None:
+	"""doctype_access() arguments for "who can create a Sales Invoice" / "which users have access
+	to Item", or None. The DocType must be named in the message."""
+	if not (WHO_ASKS.search(text or "") and ACCESS_WORDS.search(text or "")):
+		return None
+	# "which users…" asks about people; without it, "users" would be read as the User DocType.
+	doctype = _builtins()._find_doctype_in_text(WHO_ASKS.sub(" ", text))
+	if not doctype:
+		return None
+	right = _named_right(text)
+	return {"doctype": doctype, **({"right": right} if right else {})}
+
+
+@tool(
+	final_answer=True,
+	route=lambda text: access_arguments(text),
+	laya=LayaRoute("RECORD_LOOKUP", lambda text, signals: access_arguments(text)),
+)
+def doctype_access(
+	doctype: DocTypeArg,
+	right: Annotated[str | None, 'One right: "read", "write", "create", "delete", "submit", "cancel"… Omit for every right.'] = None,
+) -> dict[str, Any]:
+	"""Which roles, and which users through them, can create, read, write… a DocType ("who can
+	create a Sales Invoice", "which users have access to Item"). Reads this site's permission
+	rules and user roles. Changes nothing."""
+	if not frappe.has_permission("Role", "read"):
+		raise PermissionError("No permission to read roles")
+	if not frappe.db.exists("DocType", doctype):
+		raise ValueError(f"There is no DocType named {doctype}.")
+	rights = _permission_rights()
+	chosen = None
+	if right:
+		chosen = next((f for f in rights if right.strip().lower() in (f.fieldname, (f.label or "").lower())), None)
+		if not chosen:
+			raise ValueError(f"Unknown right {right!r}. Valid rights: {', '.join(f.fieldname for f in rights)}.")
+
+	# A DocType's customised rules (Custom DocPerm) replace its standard ones, as Frappe applies them.
+	fields = ["role", *(f.fieldname for f in rights)]
+	rows = frappe.get_all("Custom DocPerm", filters={"parent": doctype, "permlevel": 0}, fields=fields)
+	if not frappe.db.exists("Custom DocPerm", {"parent": doctype}):
+		rows = frappe.get_all("DocPerm", filters={"parent": doctype, "permlevel": 0}, fields=fields)
+	by_role: dict[str, list[str]] = {}
+	for row in rows:
+		granted = [f.label for f in rights if row.get(f.fieldname)]
+		if (chosen and row.get(chosen.fieldname)) or (not chosen and granted):
+			by_role.setdefault(row.role, [])
+			by_role[row.role] += [g for g in granted if g not in by_role[row.role]]
+
+	what = f"can **{chosen.label.lower()}**" if chosen else "have access to"
+	if not by_role:
+		return {"doctype": doctype, "right": right, "roles": [], "answer": f"No role {what} **{doctype}** in its permission rules. Only Administrator can."}
+
+	users = _users_by_role(list(by_role)) if frappe.has_permission("User", "read") else None
+	lines = [f"Roles that {what} **{doctype}**:", ""]
+	for role in sorted(by_role)[:ACCESS_ROLES_LIMIT]:
+		detail = f" ({', '.join(by_role[role])})" if not chosen else ""
+		if users is None:
+			lines.append(f"- **{role}**{detail}")
+			continue
+		names = users.get(role, [])
+		shown = ", ".join(names[:ACCESS_USERS_PER_ROLE]) + (f" …and {len(names) - ACCESS_USERS_PER_ROLE} more" if len(names) > ACCESS_USERS_PER_ROLE else "")
+		lines.append(f"- **{role}**{detail} — " + (f"{len(names)} user{'s' if len(names) != 1 else ''}: {shown}" if names else "no users"))
+	if len(by_role) > ACCESS_ROLES_LIMIT:
+		lines.append(f"…and {len(by_role) - ACCESS_ROLES_LIMIT} more roles.")
+	lines += ["", "Administrator can always do everything."]
+	if users is None:
+		lines.append("(Your role can't list users, so only the roles are shown.)")
+	return {"doctype": doctype, "right": right, "roles": sorted(by_role), "answer": "\n".join(lines)}
+
+
+def _users_by_role(roles: list[str]) -> dict[str, list[str]]:
+	"""{role: enabled system users who hold it}, without Administrator and Guest."""
+	held = frappe.get_all("Has Role", filters={"parenttype": "User", "role": ["in", roles]}, fields=["parent", "role"], limit=0)
+	people = {
+		u.name: u
+		for u in frappe.get_all(
+			"User",
+			filters={"name": ["in", list({h.parent for h in held})], "enabled": 1, "user_type": "System User"},
+			fields=["name", "full_name"],
+			limit=0,
+		)
+		if u.name not in ("Administrator", "Guest")
+	}
+	out: dict[str, list[str]] = {}
+	for h in held:
+		if h.parent in people:
+			label = people[h.parent].full_name or h.parent
+			out.setdefault(h.role, []).append(f"{label} ({h.parent})" if label != h.parent else h.parent)
+	return {role: sorted(names) for role, names in out.items()}
+
+
 def _role_rules(role: str, doctype: str | None, fields: list[str] | None = None) -> dict[str, dict[str, Any]]:
 	"""{DocType: rule} for the role at permission level 0. A DocType's customised rules (Custom
 	DocPerm) replace its standard ones (DocPerm), as Frappe applies them."""

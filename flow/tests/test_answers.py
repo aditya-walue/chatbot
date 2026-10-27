@@ -315,3 +315,68 @@ class TestSingleDocTypes(IntegrationTestCase):
 		with self.assertRaises(ValueError):
 			count.func(doctype="System Settings")
 
+
+
+class TestDocTypeAccess(IntegrationTestCase):
+	"""Who can do what on a DocType, from the site's own permission rules and user roles."""
+
+	def setUp(self):
+		from flow.tools.answers import doctype_access
+
+		self.tool = doctype_access
+		self.role = frappe.get_doc({"doctype": "Role", "role_name": "Flow Access Probe Role"}).insert()
+		# A customised rule replaces the DocType's standard ones, so the probe role is the only row.
+		frappe.get_doc(
+			{"doctype": "Custom DocPerm", "parent": "ToDo", "parenttype": "DocType", "parentfield": "permissions", "role": self.role.name, "permlevel": 0, "read": 1, "create": 1}
+		).insert(ignore_permissions=True)
+		self.user = frappe.get_doc(
+			{"doctype": "User", "email": "flow.access.probe@example.com", "first_name": "Probe", "send_welcome_email": 0, "roles": [{"role": self.role.name}]}
+		).insert()
+
+	def tearDown(self):
+		frappe.set_user("Administrator")
+		frappe.db.rollback()
+
+	def test_names_the_roles_with_the_right_and_the_users_who_hold_them(self):
+		answer = self.tool.func(doctype="ToDo", right="create")["answer"]
+		self.assertIn("Roles that can **create** **ToDo**", answer)
+		self.assertIn(f"**{self.role.name}** — 1 user: Probe ({self.user.name})", answer)
+		self.assertIn("Administrator can always do everything.", answer)
+
+	def test_a_right_the_role_lacks_is_not_listed(self):
+		result = self.tool.func(doctype="ToDo", right="delete")
+		self.assertEqual(result["roles"], [])
+		self.assertIn("No role can **delete**", result["answer"])
+
+	def test_no_right_lists_every_right_each_role_has(self):
+		answer = self.tool.func(doctype="ToDo")["answer"]
+		self.assertIn(f"Roles that have access to **ToDo**", answer)
+		self.assertIn(f"**{self.role.name}** (Read, Create", answer)  # plus whatever a new rule ticks by default
+
+	def test_unknown_right_names_the_valid_ones(self):
+		with self.assertRaises(ValueError) as caught:
+			self.tool.func(doctype="ToDo", right="teleport")
+		self.assertIn("create", str(caught.exception))
+
+	def test_a_disabled_user_does_not_count(self):
+		frappe.db.set_value("User", self.user.name, "enabled", 0)
+		self.assertIn(f"**{self.role.name}** — no users", self.tool.func(doctype="ToDo", right="read")["answer"])
+
+	def test_without_permission_to_list_users_only_roles_are_shown(self):
+		from unittest.mock import patch
+
+		real = frappe.has_permission
+		with patch("frappe.has_permission", side_effect=lambda doctype=None, *a, **k: False if doctype == "User" else real(doctype, *a, **k)):
+			answer = self.tool.func(doctype="ToDo", right="read")["answer"]
+		self.assertIn(f"- **{self.role.name}**\n", answer + "\n")
+		self.assertIn("can't list users", answer)
+
+	def test_who_can_questions_become_arguments(self):
+		from flow.tools.answers import access_arguments
+
+		self.assertEqual(access_arguments("who has the access to create sales invoice?"), {"doctype": "Sales Invoice", "right": "create"})
+		self.assertEqual(access_arguments("which users have access to item"), {"doctype": "Item"})
+		# Not a question about who may do something, or no DocType named.
+		self.assertIsNone(access_arguments("show all sales invoices"))
+		self.assertIsNone(access_arguments("who has access to the moon"))
+		self.assertIsNone(access_arguments("how can i create a sales invoice"))
