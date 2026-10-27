@@ -14,7 +14,7 @@ The loop picks who answers, first match wins:
    pasted errors). Run the tool directly; no model call. DocType names are typo-tolerant.
 2. **Laya** (optional) — `flow/lib/laya_router.py` classifies intent; at confidence ≥
    `flow_laya_threshold` (0.85) it may route to a **read-only** tool, else falls through. A HOWTO that no site tool
-   fits and that reads "add X to Y" goes to `docs_howto` (one docs.frappe.io lookup, answered as-is).
+   takes goes to `docs_howto`: the part of the docs.frappe.io page that fits the question, answered as-is.
    Every decision → `Flow Route Log`.
 3. **Qwen** — server yields a `BrowserRequest` over the SSE stream; the panel runs WebLLM and posts
    the reply to `submit_browser_reply`; `flow/lib/webllm.py` parses it.

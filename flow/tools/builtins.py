@@ -80,7 +80,7 @@ def describe(
 	"""Fields of a DocType (fieldname, label, type, required, options), your permissions, whether it is
 	submittable and its workflow, so you can pick field names before create/update. Link fields hold the
 	name of a record of their `options` DocType; Table fields hold a list of row objects of it. Not for
-	values (use read) or user guides (use creation_steps)."""
+	values (use read) or user guides (use frappe_docs)."""
 	if not frappe.has_permission(doctype, "read"):
 		raise PermissionError(f"No permission to read {doctype}")
 
@@ -626,9 +626,6 @@ def _laya_count(text: str, signals: LayaSignals) -> dict[str, Any] | None:
 	return count_arguments(text) if signals.asks_count >= signals.threshold else None
 
 
-COUNT_NAMES_LIMIT = 20
-
-
 @tool(
 	final_answer=True,
 	precheck=lambda args, context=None: _precheck_query(args),
@@ -647,15 +644,7 @@ def count(
 		return _grouped_count(doctype, filters, group_by)
 	rows = frappe.get_list(doctype, filters=filters, fields=[{"COUNT": "*", "as": "count"}])
 	total = int(rows[0]["count"]) if rows else 0
-	# Real IDs up front: small models otherwise invent plausible-looking record names.
-	names = (
-		frappe.get_list(
-			doctype, filters=filters, pluck="name", order_by="creation desc", limit=COUNT_NAMES_LIMIT
-		)
-		if total > 0
-		else []
-	)
-	return {"doctype": doctype, "count": total, "names": names, "answer": _count_answer(doctype, total, names)}
+	return {"doctype": doctype, "count": total, "answer": _count_answer(doctype, total)}
 
 
 # "how many employees (are there)?" / "how many sales invoices in the system"
@@ -858,23 +847,12 @@ def _grouped_count(doctype: str, filters: dict | None, group_by: str) -> dict[st
 	return {"doctype": doctype, "count": total, "groups": groups, "answer": answer}
 
 
-def _count_answer(doctype: str, total: int, names: list[str]) -> str:
-	route = doctype.lower().replace(" ", "-")
+def _count_answer(doctype: str, total: int) -> str:
+	"""The number only; the records themselves are show_records' job."""
 	if not total:
 		return f"There are no **{doctype}** records."
 	noun = doctype if total == 1 else f"{doctype} records"
-	lines = []
-	titles = _batch_display_names(doctype, names)
-	for name in names:
-		title = titles.get(name, name)
-		label = f"{name} — {title}" if title != name else name
-		# IDs can contain spaces ("Grace Park"); a raw space breaks the Markdown link.
-		lines.append(f"- [{label}](/desk/{route}/{quote(str(name))})")
-	more = f"\n…and {total - len(names)} more." if total > len(names) else ""
-	return (
-		f"There {'is' if total == 1 else 'are'} **{total}** {noun}:\n\n" + "\n".join(lines) + more
-		+ "\n\nAsk me for the details of any of them."
-	)
+	return f"There {'is' if total == 1 else 'are'} **{total}** {noun}."
 
 
 def _batch_display_names(doctype: str, names: list[str]) -> dict[str, str]:
@@ -1413,7 +1391,7 @@ def _precheck_names(args: dict[str, Any], context: str | None = None) -> str | N
 	names = args.get("names")
 	if not isinstance(names, list) or not names:
 		return (
-			"names must be a non-empty list of existing record IDs (from count or read). "
+			"names must be a non-empty list of existing record IDs (from show_records or read). "
 			"To make a NEW record, call create instead."
 		)
 	doctype = args.get("doctype") or ""
@@ -1789,7 +1767,7 @@ from flow.tools.web import docs_howto, frappe_docs, web_search  # noqa: E402
 BUILTIN_TOOLS: list[Tool] = [
 	find_doctypes,
 	describe,
-	creation_steps,
+	# creation_steps,  # switched off for now: how-to-create questions go to docs_howto
 	required_values,
 	small_talk,
 	error_diagnosis,

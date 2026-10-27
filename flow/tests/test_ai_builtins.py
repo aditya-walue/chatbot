@@ -126,13 +126,16 @@ class TestCount(IntegrationTestCase):
 		result = count(doctype="ToDo", filters={"description": "ai builtin count probe"})
 
 		self.assertEqual(result["count"], 3)
-		self.assertEqual(len(result["names"]), 3)
-		self.assertTrue(all(frappe.db.exists("ToDo", n) for n in result["names"]))
+		self.assertEqual(result["answer"], "There are **3** ToDo records.")
+		# The number only: no record IDs, which show_records lists.
+		self.assertNotIn("names", result)
+		self.assertNotIn("/desk/", result["answer"])
 
-	def test_zero_count_skips_names(self):
+	def test_one_and_zero_counts(self):
+		frappe.get_doc({"doctype": "ToDo", "description": "ai builtin count single"}).insert()
+		self.assertEqual(count(doctype="ToDo", filters={"description": "ai builtin count single"})["answer"], "There is **1** ToDo.")
 		result = count(doctype="ToDo", filters={"description": "nonexistent descriptionxyz123"})
 		self.assertEqual(result["count"], 0)
-		self.assertEqual(result["names"], [])
 		self.assertIn("no **ToDo** records", result["answer"])
 
 	def test_batch_display_names(self):

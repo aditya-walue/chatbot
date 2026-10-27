@@ -22,7 +22,7 @@ DEFAULT_AGENT_TOOLS = (
 	"read",
 	"create",
 	"update",
-	"creation_steps",
+	# "creation_steps",  # switched off for now: how-to-create questions go to docs_howto
 	"error_diagnosis",
 	"required_values",
 	"small_talk",
