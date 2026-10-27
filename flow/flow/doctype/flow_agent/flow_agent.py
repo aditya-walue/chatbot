@@ -106,7 +106,12 @@ class FlowAgent(Document):
 
 	def _resolve_tools(self) -> list[Tool]:
 		from flow.memory.memory import MEMORY_TOOL_SLUG
-		from flow.tools.builtins import KNOWLEDGE_SEARCH_SLUG, bind_search_knowledge, bind_update_memory
+		from flow.tools.builtins import (
+			KNOWLEDGE_SEARCH_SLUG,
+			bind_search_knowledge,
+			bind_update_memory,
+			retired_builtin,
+		)
 
 		resolved: list[Tool] = []
 		for row in self.tools:
@@ -115,7 +120,7 @@ class FlowAgent(Document):
 			except frappe.DoesNotExistError:
 				frappe.log_error(title=f"Flow Agent {self.name!r}: tool {row.tool!r} not found, skipping")
 				continue
-			if not tool_doc.enabled:
+			if not tool_doc.enabled or retired_builtin(tool_doc):
 				continue
 			if tool_doc.name == KNOWLEDGE_SEARCH_SLUG:
 				resolved.append(bind_search_knowledge([kb.knowledge_base for kb in self.knowledge_bases]))
