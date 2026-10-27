@@ -1716,7 +1716,7 @@ from flow.tools.answers import (  # noqa: E402
 	status_steps,
 )
 from flow.tools.diagnosis import error_diagnosis  # noqa: E402
-from flow.tools.web import frappe_docs, web_search  # noqa: E402
+from flow.tools.web import docs_howto, frappe_docs, web_search  # noqa: E402
 
 BUILTIN_TOOLS: list[Tool] = [
 	find_doctypes,
@@ -1732,6 +1732,7 @@ BUILTIN_TOOLS: list[Tool] = [
 	status_steps,
 	role_permissions,
 	frappe_docs,
+	docs_howto,
 	web_search,
 	read,
 	count,

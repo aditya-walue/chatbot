@@ -13,7 +13,8 @@ The loop picks who answers, first match wins:
    "how to create X", "how to assign X to Y", "how to mark X as paid", "create X with …", "show/list X", "what is X", "what happens after X",
    pasted errors). Run the tool directly; no model call. DocType names are typo-tolerant.
 2. **Laya** (optional) — `flow/lib/laya_router.py` classifies intent; at confidence ≥
-   `flow_laya_threshold` (0.8) it may route to a **read-only** tool, else falls through.
+   `flow_laya_threshold` (0.85) it may route to a **read-only** tool, else falls through. A HOWTO that no site tool
+   fits and that reads "add X to Y" goes to `docs_howto` (one docs.frappe.io lookup, answered as-is).
    Every decision → `Flow Route Log`.
 3. **Qwen** — server yields a `BrowserRequest` over the SSE stream; the panel runs WebLLM and posts
    the reply to `submit_browser_reply`; `flow/lib/webllm.py` parses it.
@@ -29,6 +30,7 @@ Write tools (`create`, `update`) always go: prechecks → approval card → save
 | Builtin data tools, write prechecks, route patterns | `flow/tools/builtins.py` |
 | Final-answer tools (show_records, explain_doctype, document_flow, assignment_steps, status_steps) | `flow/tools/answers.py` |
 | Error diagnosis | `flow/tools/diagnosis.py` |
+| Docs lookup tools (`frappe_docs`, `web_search`, `docs_howto`) | `flow/tools/web.py` |
 | Browser-model bridge, tool-call parsing, strict JSON | `flow/lib/webllm.py`, `frontend/src/lib/webllm.js` |
 | Default model + "Flow Lite" agent (synced on install/migrate) | `flow/assistant/default.py` |
 | Opik tracing (optional) | `flow/lib/tracing.py` — a trace per agent run; spans for routes, model calls, tool calls |
@@ -79,5 +81,5 @@ test_ai_assistant test_session test_ai_triggers test_ai_model test_knowledge tes
   run time; routes only decide *which* tool runs.
 - **Don't weaken write safety.** Permissions, prechecks (made-up values, required fields, unknown
   fields, link resolution) and the approval card stay on every write path.
-- **Keep Laya read-only and optional**; don't lower the 0.8 threshold without evaluation results.
+- **Keep Laya read-only and optional**; don't lower the 0.85 threshold without evaluation results.
 - Match the surrounding style: tabs, short docstrings explaining *why*, tests next to behaviour.
