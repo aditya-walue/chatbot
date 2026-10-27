@@ -145,23 +145,24 @@ class TestLayaRouter(IntegrationTestCase):
 		self.assertEqual(log.outcome, "Fallback")
 		self.assertIn("below", log.reason)
 
-	def test_howto_and_count_need_a_doctype(self):
-		self.assertEqual(self._route(_laya("HOWTO", 0.9), "guide me through adding a todo"), ("creation_steps", {"doctype": "ToDo"}))
-		self.assertIsNone(self._route(_laya("HOWTO", 0.9), "guide me through life"))
+	def test_howto_to_create_goes_to_the_docs_while_creation_steps_is_switched_off(self):
+		from flow.tools.builtins import BUILTIN_TOOLS
 
-	def test_howto_add_to_goes_to_the_docs_when_no_site_tool_fits(self):
-		result = self._route(_laya("HOWTO", 0.91), "how to add new tax component to the sales invoice?")
-		self.assertEqual(result, ("docs_howto", {"topic": "add new tax component sales invoice"}))
+		self.assertNotIn("creation_steps", [t.name for t in BUILTIN_TOOLS])
+		self.assertEqual(self._route(_laya("HOWTO", 0.9), "guide me through adding a todo")[0], "docs_howto")
+
+	def test_any_other_confident_howto_goes_to_the_docs_not_the_chat_model(self):
+		result = self._route(_laya("HOWTO", 0.91), "how to convert a widget to a gadget?")
+		self.assertEqual(result, ("docs_howto", {"topic": "how to convert a widget to a gadget"}))
 		log = self._last_log()
 		self.assertEqual((log.outcome, log.tool), ("Routed", "docs_howto"))
 
-	def test_howto_add_to_keeps_the_site_tools_first(self):
+	def test_howto_keeps_the_site_tools_first(self):
 		# Creating a record and linking one record to another still use their own tools.
-		self.assertEqual(self._route(_laya("HOWTO", 0.92), "how do I add a new todo")[0], "creation_steps")
 		self.assertEqual(self._route(_laya("HOWTO", 0.92), "how do I add a role to a user")[0], "assignment_steps")
 
-	def test_howto_add_to_needs_confidence_and_the_tool(self):
-		text = "how to add new tax component to the sales invoice?"
+	def test_docs_howto_needs_confidence_and_the_tool(self):
+		text = "how to convert a widget to a gadget?"
 		self.assertIsNone(self._route(_laya("HOWTO", 0.5), text))
 		self.assertIn("below", self._last_log().reason)
 		# An agent without the tool falls back to the chat model, and the log says why.
@@ -169,13 +170,12 @@ class TestLayaRouter(IntegrationTestCase):
 		self.assertIn("docs_howto isn't enabled", self._last_log().reason)
 
 	def test_only_howto_intent_reaches_the_docs_route(self):
-		text = "how to add new tax component to the sales invoice?"
+		text = "how to convert a widget to a gadget?"
 		self.assertIsNone(self._route(_laya("DEFINITION", 0.95), text))
 		self.assertIsNone(self._route(_laya("WORKFLOW", 0.95), text))
 
-	def test_howto_that_is_not_add_to_still_falls_back(self):
-		self.assertIsNone(self._route(_laya("HOWTO", 0.95), "how does a purchase order get cancelled"))
-		self.assertIn("no direct Flow path", self._last_log().reason)
+	def test_a_howto_with_no_words_to_search_falls_back(self):
+		self.assertIsNone(self._route(_laya("HOWTO", 0.95), "12 34 ???"))
 
 	def test_the_tool_map_is_declared_on_the_tools(self):
 		from flow.tools import builtins
@@ -232,9 +232,9 @@ class TestLayaRouter(IntegrationTestCase):
 		self.assertEqual(seen, [(0.7, 0.8)])
 
 	def test_howto_routes_only_requests_to_create(self):
-		self.assertEqual(self._route(_laya("HOWTO", 0.9), "walk me through setting up a new todo"), ("creation_steps", {"doctype": "ToDo"}))
-		self.assertEqual(self._route(_laya("HOWTO", 0.9), "what are the steps for making a note?"), ("creation_steps", {"doctype": "Note"}))
-		# How-to questions about doing something else with a DocType go to the chat model.
+		self.assertEqual(self._route(_laya("HOWTO", 0.9), "walk me through setting up a new todo")[0], "docs_howto")
+		self.assertEqual(self._route(_laya("HOWTO", 0.9), "what are the steps for making a note?")[0], "docs_howto")
+		# How-to questions about doing something else with a DocType use their own tools.
 		self.assertEqual(
 			self._route(_laya("HOWTO", 0.92), "could you tell me how to get this todo marked as closed"),
 			("status_steps", {"doctype": "ToDo", "status": "Closed"}),
@@ -243,12 +243,12 @@ class TestLayaRouter(IntegrationTestCase):
 			self._route(_laya("HOWTO", 0.92), "can you tell me the way to give a role to a user"),
 			("assignment_steps", {"item": "Role", "target": "User"}),
 		)
+		# No site tool reads these, so the docs answer them rather than the chat model.
 		for text in (
 			"how do I link my car to the moon",
 			"how to approve a leave application",
 		):
-			self.assertIsNone(self._route(_laya("HOWTO", 0.92), text), text)
-			self.assertIn("no direct Flow path", self._last_log().reason)
+			self.assertEqual(self._route(_laya("HOWTO", 0.92), text)[0], "docs_howto", text)
 		self.assertEqual(
 			self._route(_laya("RECORD_LOOKUP", 0.9, asks_count=0.95), "number of todos we have"),
 			("count", {"doctype": "ToDo"}),

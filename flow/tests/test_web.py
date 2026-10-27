@@ -80,18 +80,26 @@ class TestFrappeDocs(IntegrationTestCase):
 
 
 class TestDocsHowto(IntegrationTestCase):
-	"""docs_howto answers a "how to add X to Y" question from one docs lookup, no chat model."""
+	"""docs_howto answers a how-to question from the part of a docs page that fits it, no chat model."""
+
+	PAGES = {
+		"app/intro": "---\ntitle: x\n---\n\nWelcome to the app.\n\n## Overview\n\nThings live here.",
+		"app/widgets": (
+			"A widget is a thing.\n\n## Making a widget\n\nOpen the form and save.\n\n"
+			"## Converting a widget to a gadget\n\nPress **Convert**.\n\n![](/files/shot.png)\n\nThe widget becomes a gadget."
+		),
+	}
 
 	def _get(self, url, **kwargs):
 		response = MagicMock()
 		response.raise_for_status.return_value = None
 		if "search.search" in url:
 			response.json.return_value = {"message": {"results": [
-				{"title": "Taxes", "route": "erpnext/taxes", "content": "taxes"},
-				{"title": "Charges", "route": "erpnext/charges", "content": "charges"},
+				{"title": "Intro", "route": "app/intro", "content": "intro"},
+				{"title": "Widgets", "route": "app/widgets", "content": "widgets"},
 			]}}
 		else:
-			response.text = "---\ntitle: x\n---\n\nOpen the form.\n\n" + ("Add a row. " * 400)
+			response.text = self.PAGES[url.removeprefix("https://docs.frappe.io/").removesuffix(".md")]
 		return response
 
 	def _empty(self, url, **kwargs):
@@ -100,43 +108,82 @@ class TestDocsHowto(IntegrationTestCase):
 		response.json.return_value = {"message": {"results": []}}
 		return response
 
-	def test_add_to_questions_become_letters_only_search_words(self):
-		from flow.tools.web import add_to_arguments
+	def test_topic_is_the_letters_only_words_of_the_message(self):
+		from flow.tools.web import topic_arguments
 
-		self.assertEqual(
-			add_to_arguments("How to add new tax component to the sales invoice?"),
-			{"topic": "add new tax component sales invoice"},
-		)
-		# Record IDs, emails and numbers never reach the search.
-		self.assertEqual(
-			add_to_arguments("how do I add jane@example.com to project PRJ-0042 in the tracker"),
-			{"topic": "add project in tracker"},
-		)
+		self.assertEqual(topic_arguments("How to convert a widget to a gadget?"), {"topic": "how to convert a widget to a gadget"})
+		# IDs, emails and numbers never reach the search.
+		self.assertEqual(topic_arguments("how do I add jane@example.com to PRJ-0042 in the tracker"), {"topic": "how do i add to in the tracker"})
+		for text in ("", "???", "12 34", None):
+			self.assertIsNone(topic_arguments(text), text)
 
-	def test_other_questions_are_not_add_to_questions(self):
-		from flow.tools.web import add_to_arguments
+	def test_the_section_that_fits_the_words_is_picked_over_the_page_opening(self):
+		with patch("requests.get", side_effect=self._get), patch("flow.tools.web._installed_app_words", return_value={"app"}):
+			from flow.tools.web import docs_howto
 
-		for text in ("how does a purchase order work", "add", "guide me through life", "", None):
-			self.assertIsNone(add_to_arguments(text), text)
-
-	def test_answer_is_the_page_text_its_link_and_related_pages(self):
-		from flow.tools.web import docs_howto
-
-		with patch("requests.get", side_effect=self._get), patch("flow.tools.web._installed_app_words", return_value={"erpnext"}):
-			result = docs_howto.func(topic="add tax component sales invoice")
+			result = docs_howto.func(topic="how to convert a widget to a gadget")
 		answer = result["answer"]
-		self.assertIn("Open the form.", answer)
-		self.assertIn("Source: https://docs.frappe.io/erpnext/taxes", answer)
-		self.assertIn("(https://docs.frappe.io/erpnext/charges)", answer)
-		self.assertLess(len(answer), 2600)
+		self.assertIn("(Widgets: Converting a widget to a gadget)", answer)
+		self.assertIn("Press **Convert**.", answer)
+		self.assertIn("Source: https://docs.frappe.io/app/widgets", answer)
+		self.assertNotIn("Open the form and save.", answer)
+		self.assertNotIn("shot.png", answer)  # image links don't load in a chat
+		self.assertIn("(https://docs.frappe.io/app/intro)", answer)
 
-	def test_nothing_found_gives_no_answer_so_the_chat_model_takes_over(self):
+	def test_a_page_deeper_in_the_results_wins_when_its_section_fits_better(self):
+		from flow.tools.web import pick_section
+
+		pages = [({"url": "a"}, "Intro to the app.\n\n## Overview\n\nSomething else."), ({"url": "b"}, "## Converting a widget to a gadget\n\nPress Convert.")]
+		page, heading, body, score = pick_section(pages, "convert widget gadget")
+		self.assertEqual((page["url"], heading, body), ("b", "Converting a widget to a gadget", "Press Convert."))
+		self.assertGreater(score, 0)
+
+	def test_words_found_in_every_part_do_not_decide(self):
+		from flow.tools.web import pick_section
+
+		pages = [({"url": "a"}, "the how to start.\n\n## One\n\nthe how to.\n\n## Two\n\nthe how to gadget.")]
+		self.assertEqual(pick_section(pages, "how to the")[1::2], (None, 0.0))  # nothing distinguishes a part: the opening
+		self.assertEqual(pick_section(pages, "how to gadget")[1], "Two")
+
+	def test_when_the_docs_have_nothing_the_web_results_are_the_answer(self):
 		from flow.tools.web import docs_howto
 
-		with patch("requests.get", side_effect=self._empty), patch("flow.tools.web._installed_app_words", return_value=set()):
-			result = docs_howto.func(topic="add something nobody documented")
+		results = [{"title": "A forum thread", "url": "https://forum.example/t/1", "snippet": "Try the form."}]
+		with patch("requests.get", side_effect=self._empty), patch("flow.tools.web._installed_app_words", return_value=set()), patch(
+			"flow.tools.web._duckduckgo", return_value=results
+		) as web:
+			result = docs_howto.func(topic="something nobody documented")
+		web.assert_called_once_with("something nobody documented")
+		self.assertIn("couldn't find this in the Frappe documentation", result["answer"])
+		self.assertIn("- [A forum thread](https://forum.example/t/1) — Try the form.", result["answer"])
+
+	def test_docs_that_mention_none_of_the_words_count_as_having_nothing(self):
+		from flow.tools.web import docs_howto
+
+		with patch("requests.get", side_effect=self._get), patch("flow.tools.web._installed_app_words", return_value={"app"}), patch(
+			"flow.tools.web._duckduckgo", return_value=[{"title": "Elsewhere", "url": "https://web.example/x", "snippet": ""}]
+		):
+			result = docs_howto.func(topic="zebra xylophone")
+		self.assertIn("web results may help", result["answer"])
+		self.assertNotIn("Frappe documentation says", result["answer"])
+
+	def test_nothing_in_the_docs_or_on_the_web_gives_no_answer_so_the_chat_model_takes_over(self):
+		from flow.tools.web import docs_howto
+
+		with patch("requests.get", side_effect=self._empty), patch("flow.tools.web._installed_app_words", return_value=set()), patch(
+			"flow.tools.web._duckduckgo", return_value=[]
+		):
+			result = docs_howto.func(topic="something nobody documented")
 		self.assertNotIn("answer", result)
 		self.assertIn("Nothing found", result["answer_hint"])
+
+	def test_a_web_search_that_errors_leaves_it_to_the_chat_model(self):
+		from flow.tools.web import docs_howto
+
+		with patch("requests.get", side_effect=self._empty), patch("flow.tools.web._installed_app_words", return_value=set()), patch(
+			"flow.tools.web._duckduckgo", side_effect=OSError("offline")
+		):
+			self.assertNotIn("answer", docs_howto.func(topic="anything at all"))
 
 	def test_can_be_turned_off(self):
 		from flow.tools.web import docs_howto
@@ -144,4 +191,4 @@ class TestDocsHowto(IntegrationTestCase):
 		frappe.conf.flow_web_search_enabled = 0
 		self.addCleanup(lambda: frappe.conf.pop("flow_web_search_enabled", None))
 		with self.assertRaises(ValueError):
-			docs_howto.func(topic="add tax")
+			docs_howto.func(topic="anything")

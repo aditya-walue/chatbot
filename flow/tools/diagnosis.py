@@ -3,11 +3,14 @@
 
 """error_diagnosis: explain an error message from facts on this site, not from memory.
 
-Three sources, each optional:
+Sources, each optional:
+- the traceback's own frames in the installed apps (file, line, function), when one was pasted;
 - the code that raises the message, found by searching the installed apps' source (exact text
   first, then its fixed parts, so templated messages like "Could not find {0}" still match);
-- recent matching Error Log entries, for users who may read them;
-- a table of common Frappe / ERPNext error types with their usual cause and fix.
+- scripts and templates saved on the site, recent Error Log entries and other failure logs;
+- a table of common Frappe / ERPNext error types with their usual cause and fix;
+- when none of those knows the message, the Frappe documentation, then the web (the fixed start
+  of the message only, never the values in it).
 
 The result is a finished, formatted diagnosis shown to the user as-is (a final-answer tool).
 """
@@ -53,6 +56,12 @@ FAILURE_LOGS = (
 	("Integration Request", "error", {"status": "Failed"}, "Integration Request"),
 	("Webhook Request Log", "error", {}, "Webhook Request Log"),
 )
+# A traceback frame: File "/…/apps/<app>/<path>.py", line 12, in function
+TRACE_FRAME = re.compile(r'File "([^"]+)", line (\d+), in (\S+)')
+MAX_FRAMES = 2
+MIN_HELP_WORDS = 3
+# Where a message's filled-in values begin: a quote, "Label: value", a bracket, "#1", a digit.
+VALUE_START = re.compile(r"[\"']|:\s|\[|#|\d|<")
 # Lines that raise or show a message rank above a mere mention of the text.
 RAISE_MARKERS = ("throw", "msgprint", "raise", "_(", "__(", "show_alert", "ValidationError")
 
@@ -196,6 +205,7 @@ def error_diagnosis(
 	if not message:
 		raise ValueError("Paste the error message to diagnose.")
 
+	frames = _traceback_frames(error) if _can_read_source() else []
 	sources = _find_in_source(message) if _can_read_source() else []
 	if not sources:
 		# A message the user sees translated: search the code for its English original.
@@ -208,7 +218,63 @@ def error_diagnosis(
 	if exception == "MandatoryError":
 		missing = message.rsplit("]:", 1)[-1].strip()
 		causes = [(f"Required field(s) left empty: {missing}.", "Fill in those fields, then save again.")]
-	return {"answer": _format(message, exception, sources, logs, causes[:2], site_code, failures)}
+	help_text = None
+	if not (causes or sources or frames or logs or site_code or failures):
+		help_text = _docs_help(message, exception)
+	return {"answer": _format(message, exception, sources, logs, causes[:2], site_code, failures, frames, help_text)}
+
+
+def _traceback_frames(text: str) -> list[dict[str, Any]]:
+	"""The innermost frames of a pasted traceback that are in an installed app (file relative to
+	the apps folder, line, function): where it was raised, read from the paste itself."""
+	installed = {app: _app_title(app) for app in frappe.get_installed_apps()}
+	frames = []
+	for path, line, function in TRACE_FRAME.findall(text or ""):
+		found = re.search(r"/apps/([^/]+)/(.+)$", path.replace(os.sep, "/"))
+		if found and found.group(1) in installed:
+			frames.append({"app": installed[found.group(1)], "file": f"{found.group(1)}/{found.group(2)}", "line": int(line), "function": function})
+	return frames[-MAX_FRAMES:][::-1]
+
+
+def _app_title(app: str) -> str:
+	return (frappe.get_hooks("app_title", app_name=app) or [app])[0]
+
+
+def _exception_kind(name: str) -> str:
+	"""What Frappe says about an exception class it defines: the kind of error it is and the HTTP
+	status it answers with. Empty for any other exception."""
+	cls = getattr(frappe.exceptions, name or "", None)
+	if not (isinstance(cls, type) and issubclass(cls, Exception)):
+		return ""
+	parents = [b.__name__ for b in cls.__mro__[1:] if b.__module__ == frappe.exceptions.__name__]
+	parts = [f"a kind of {parents[0]}"] if parents else []
+	if getattr(cls, "http_status_code", None):
+		parts.append(f"HTTP {cls.http_status_code}")
+	return ", ".join(parts)
+
+
+def _public_words(message: str, exception: str) -> str:
+	"""Search words for a public lookup: the message up to where its filled-in values begin ("Could
+	not find Customer: …" gives "Could not find Customer"), plus the exception's name in words.
+	Empty when that leaves too little to search on."""
+	fixed = VALUE_START.split(message, maxsplit=1)[0]
+	named = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", exception or "")
+	words = re.findall(r"[A-Za-z][A-Za-z\-]*", f"{fixed} {named}")
+	return " ".join(words) if len(words) >= MIN_HELP_WORDS else ""
+
+
+def _docs_help(message: str, exception: str) -> str | None:
+	"""What the Frappe documentation, then a web search, say about a message nothing on this site
+	explains; None when neither has anything or lookups are off."""
+	words = _public_words(message, exception)
+	if not words:
+		return None
+	from flow.tools.web import docs_howto
+
+	try:
+		return docs_howto.func(topic=words).get("answer")
+	except Exception:
+		return None
 
 
 def _clean(error: str) -> tuple[str, str]:
@@ -446,18 +512,22 @@ def _format(
 	causes: list[tuple[str, str]],
 	site_code: list[dict[str, str]] | None = None,
 	failures: list[dict[str, Any]] | None = None,
+	frames: list[dict[str, Any]] | None = None,
+	help_text: str | None = None,
 ) -> str:
 	out = ["**Error diagnosis**", f"> {message}"]
 	if exception:
-		out.append(f"Exception type: `{exception}`")
+		kind = _exception_kind(exception)
+		out.append(f"Exception type: `{exception}`" + (f" ({kind})" if kind else ""))
 
 	if causes:
 		out.append("**Likely cause**\n" + "\n".join(f"- {cause}" for cause, _fix in causes))
 		out.append("**How to fix**\n" + "\n".join(f"- {fix}" for _cause, fix in causes))
 
-	if sources or site_code:
+	if sources or site_code or frames:
 		# Location only — users want the cause and the fix, not the code.
-		places = [f"- {hit['app']} — `{hit['file']}`, line {hit['line']}" for hit in sources]
+		places = [f"- {f['app']} — `{f['file']}`, line {f['line']}, in `{f['function']}` (from the traceback)" for f in frames or []]
+		places += [f"- {hit['app']} — `{hit['file']}`, line {hit['line']}" for hit in sources]
 		places += [
 			f"- {hit['doctype']} — [{hit['name']}](/desk/{hit['doctype'].lower().replace(' ', '-')}/{quote(hit['name'])})"
 			f" (a script or template saved on this site)"
@@ -495,10 +565,11 @@ def _format(
 			+ (f"\n> {summary}" if summary else "")
 		)
 
-	if not (causes or sources or logs or site_code or failures):
+	if help_text:
+		out.append("**From the documentation**\n" + help_text)
+	elif not (causes or sources or logs or site_code or failures or frames):
 		out.append(
 			"I couldn't find this message in the code or the Error Log, and it doesn't match a known "
-			"error type. Tell me what you were doing when it appeared (which page, which button), or ask "
-			"me to look it up in the Frappe docs."
+			"error type. Tell me what you were doing when it appeared (which page, which button)."
 		)
 	return "\n\n".join(out)
