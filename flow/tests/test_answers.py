@@ -422,6 +422,7 @@ class TestRoleQuestions(IntegrationTestCase):
 
 		self.assertEqual(role_users_arguments(f"which users have the {self.role.name} role?"), {"role": self.role.name})
 		self.assertIsNone(role_users_arguments("which users can create a ToDo"))
+		self.assertIsNone(role_users_arguments("what roles does Administrator have"))
 		self.assertIsNone(role_users_arguments("which users have the Nonexistent Probe role"))
 
 	def test_user_roles_for_the_asker_and_for_another_user(self):

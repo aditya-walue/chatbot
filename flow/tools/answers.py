@@ -1252,6 +1252,8 @@ def _users_by_role(roles: list[str]) -> dict[str, list[str]]:
 ROLE_USERS_LIMIT = 50
 # "my roles", "which roles do I have": the asker's own roles.
 OWN_ROLES = re.compile(r"\b(?:my\s+roles?|roles?\s+(?:do\s+)?(?:i|we)\s+(?:have|hold|got)|roles?\s+(?:am\s+i|i\s+am|i\s+was)\s+(?:given|assigned|in))\b", re.IGNORECASE)
+# Asks about people ("who has…", "which users…"); "which roles…" asks about roles, not people.
+ASKS_PEOPLE = re.compile(r"\b(who|(?:which|what)\s+(?:users?|people|persons?))\b", re.IGNORECASE)
 EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 
 
@@ -1268,7 +1270,7 @@ def role_users_arguments(text: str) -> dict[str, Any] | None:
 	"""role_users() arguments for "which users have the Sales Manager role", or None. The role
 	must exist on this site and be named in the message; who-can-do-X-on-a-DocType questions
 	belong to doctype_access."""
-	if not WHO_ASKS.search(text or "") or access_arguments(text):
+	if not ASKS_PEOPLE.search(text or "") or access_arguments(text):
 		return None
 	role = _name_in_text(WHO_ASKS.sub(" ", text), frappe.get_all("Role", pluck="name", limit=0))
 	return {"role": role} if role else None
