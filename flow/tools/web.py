@@ -237,7 +237,7 @@ def _web_fallback(topic: str) -> dict[str, Any]:
 def _docs_search(query: str) -> list[dict[str, str]]:
 	"""Pages docs.frappe.io's own search finds (it is a Frappe Wiki site), best first: pages of
 	the apps this site runs before others (the docs also cover Frappe Cloud, Books…), and current
-	pages before old versioned copies (…/v12/…)."""
+	pages, with old versioned copies (…/v12/…) left out whenever a current page exists."""
 	import requests
 
 	try:
@@ -253,6 +253,7 @@ def _docs_search(query: str) -> list[dict[str, str]]:
 		raise ValueError(f"The Frappe documentation can't be reached right now ({type(e).__name__}).") from e
 
 	installed = _installed_app_words()
+	preferred = _preferred_apps(query)
 	pages = []
 	for i, item in enumerate(found):
 		route = str(item.get("route") or "").strip("/")
@@ -264,11 +265,63 @@ def _docs_search(query: str) -> list[dict[str, str]]:
 				"title": _plain(item.get("title")),
 				"url": f"https://{DOCS_HOST}/{route}",
 				"snippet": _plain(item.get("content"))[:300],
-				"rank": (parts[0] not in installed, any(re.fullmatch(r"v\d+", p) for p in parts), i),
+				"rank": (parts[0] not in installed, _app_order(parts[0], preferred), any(re.fullmatch(r"v\d+", p) for p in parts), i),
 			}
 		)
 	pages.sort(key=lambda p: p.pop("rank"))
-	return pages
+	return _current_only(pages)
+
+
+PREFERRED_DOCTYPES = 20
+
+
+def _preferred_apps(query: str) -> list[set[str]]:
+	"""The installed apps this site actually uses for `query`, most used first, as sets of the words
+	docs.frappe.io uses for them. Found from the site's own DocTypes whose names contain a query word
+	("lead" -> "Lead" of one app, "CRM Lead" of another), ranked by how many records they hold, so a
+	topic that two apps cover is answered from the docs of the app whose data is here."""
+	words = {w for w in re.findall(r"[a-z]+", str(query).lower()) if len(w) >= 4}
+	if not words:
+		return []
+	try:
+		doctypes = []
+		for word in sorted(words):
+			doctypes += frappe.get_all(
+				"DocType",
+				filters={"name": ["like", f"%{word}%"], "istable": 0, "issingle": 0},
+				fields=["name", "module"],
+				limit=PREFERRED_DOCTYPES,
+			)
+		app_of = dict(frappe.get_all("Module Def", fields=["name", "app_name"], as_list=True))
+		used: dict[str, int] = {}
+		for doctype in {d.name: d for d in doctypes}.values():
+			app = app_of.get(doctype.module)
+			if app:
+				used[app] = used.get(app, 0) + frappe.db.count(doctype.name)
+	except Exception:
+		return []
+	return [_app_words(app) for app, count in sorted(used.items(), key=lambda kv: -kv[1]) if count]
+
+
+def _app_words(app: str) -> set[str]:
+	title = (frappe.get_hooks("app_title", app_name=app) or [app])[0]
+	return {app.lower(), *(w.lower() for w in title.split())}
+
+
+def _app_order(section: str, preferred: list[set[str]]) -> int:
+	"""Position of the docs section's app among the apps the site uses for the topic."""
+	return next((i for i, words in enumerate(preferred) if section in words), len(preferred))
+
+
+def _is_versioned(url: str) -> bool:
+	return any(re.fullmatch(r"v\d+", part) for part in url.lower().split("/"))
+
+
+def _current_only(pages: list[dict[str, str]]) -> list[dict[str, str]]:
+	"""Drop the old versioned copies (…/v12/…) when current pages exist: their steps can be out of
+	date and they only add noise beside the current page. Kept when they are all there is."""
+	current = [p for p in pages if not _is_versioned(p["url"])]
+	return current or pages
 
 
 def _plain(html: Any) -> str:

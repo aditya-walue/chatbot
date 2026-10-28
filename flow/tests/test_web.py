@@ -75,8 +75,60 @@ class TestFrappeDocs(IntegrationTestCase):
 		self.assertEqual(result["page"]["title"], "Role Based Permissions")
 		self.assertEqual(result["page"]["text"], "Permissions are set on **roles**.")
 		self.assertEqual(get.call_args_list[-1].args[0], "https://docs.frappe.io/erpnext/role-based-permissions.md")
-		# The old versioned page and other products' pages follow.
-		self.assertEqual([m["url"].split(".io/")[1] for m in result["more"]], ["erpnext/v12/user/roles", "cloud/role-permissions"])
+		# Other products' pages follow; the old versioned page is left out.
+		self.assertEqual([m["url"].split(".io/")[1] for m in result["more"]], ["cloud/role-permissions"])
+
+	def test_old_versioned_pages_are_kept_only_when_nothing_current_exists(self):
+		from flow.tools.web import _current_only
+
+		old = {"title": "Old", "url": "https://docs.frappe.io/erpnext/v13/user/roles", "snippet": ""}
+		new = {"title": "New", "url": "https://docs.frappe.io/erpnext/roles", "snippet": ""}
+		self.assertEqual(_current_only([old, new]), [new])
+		self.assertEqual(_current_only([old]), [old])
+
+
+class TestPreferredApps(IntegrationTestCase):
+	"""A topic two apps cover is answered from the docs of the app whose records this site holds."""
+
+	def _results(self, *routes):
+		response = MagicMock()
+		response.raise_for_status.return_value = None
+		response.json.return_value = {"message": {"results": [{"title": r, "route": r, "content": ""} for r in routes]}}
+		return response
+
+	def test_pages_of_the_app_the_site_uses_come_first(self):
+		from flow.tools.web import _docs_search
+
+		with (
+			patch("requests.get", return_value=self._results("erpnext/lead", "crm/leads")),
+			patch("flow.tools.web._installed_app_words", return_value={"erpnext", "crm"}),
+			patch("flow.tools.web._preferred_apps", return_value=[{"crm"}, {"erpnext"}]),
+		):
+			urls = [p["url"].split(".io/")[1] for p in _docs_search("convert lead to deal")]
+		self.assertEqual(urls, ["crm/leads", "erpnext/lead"])
+
+	def test_search_order_decides_when_the_site_has_no_preference(self):
+		from flow.tools.web import _docs_search
+
+		with (
+			patch("requests.get", return_value=self._results("erpnext/lead", "crm/leads")),
+			patch("flow.tools.web._installed_app_words", return_value={"erpnext", "crm"}),
+			patch("flow.tools.web._preferred_apps", return_value=[]),
+		):
+			urls = [p["url"].split(".io/")[1] for p in _docs_search("convert lead to deal")]
+		self.assertEqual(urls, ["erpnext/lead", "crm/leads"])
+
+	def test_preferred_apps_come_from_the_doctypes_that_hold_records(self):
+		from flow.tools.web import _preferred_apps
+
+		doctypes = [frappe._dict(name="Alpha Thing", module="Mod A"), frappe._dict(name="Beta Thing", module="Mod B")]
+		counts = {"Alpha Thing": 0, "Beta Thing": 7}
+		with (
+			patch("frappe.get_all", side_effect=lambda dt, **k: doctypes if dt == "DocType" else [("Mod A", "app_a"), ("Mod B", "app_b")]),
+			patch("frappe.db.count", side_effect=lambda dt: counts[dt]),
+			patch("frappe.get_hooks", return_value=[]),
+		):
+			self.assertEqual(_preferred_apps("create a thing"), [{"app_b"}])
 
 
 class TestDocsHowto(IntegrationTestCase):

@@ -758,7 +758,7 @@ TOOL_GROUPS: tuple[tuple[re.Pattern, tuple[str, ...]], ...] = tuple(
 		# How-to guides: specific workflows
 		(r"\b(assign|link|attach|allocat\w*)\b", ("assignment_steps", "explain_doctype")),
 		(r"\b(how\b.*\b(mark|status|paid|submit|cancel|close)|mark\b.*\b(paid|status))\b", ("status_steps", "document_flow")),
-		(r"\b(how (do|to|can|should)|steps?|guide|procedure)\b", ("frappe_docs",)),
+		(r"\b(how (do|to|can|should)|steps?|guide|procedure)\b", ("docs_howto", "frappe_docs")),
 		# Explain: roles and permissions
 		(r"\b(role|roles|permission|permissions|access|access rights?|privilege)\b", ("doctype_access", "role_users", "user_roles", "role_permissions", "explain_doctype")),
 		# Explain: document workflow & lifecycle
@@ -776,7 +776,7 @@ TOOL_GROUPS: tuple[tuple[re.Pattern, tuple[str, ...]], ...] = tuple(
 DEFAULT_TOOLS = ("show_records", "count", "read", "find_doctypes")
 MAX_TOOLS = 6
 # Always offered beside the chosen tools: the fallback when none of them can answer.
-FALLBACK_TOOLS = ("frappe_docs", "web_search")
+FALLBACK_TOOLS = ("docs_howto", "frappe_docs", "web_search")
 RECENT_USER_TURNS = 2
 
 
