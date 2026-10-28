@@ -1277,11 +1277,12 @@ def role_users_arguments(text: str) -> dict[str, Any] | None:
 
 
 def user_roles_arguments(text: str) -> dict[str, Any] | None:
-	"""user_roles() arguments for "what roles do I have" ({}) or "what roles does <user> have", or None."""
+	"""user_roles() arguments for "what roles do I have" (the person asking) or "what roles does
+	<user> have", or None. Never an empty dict: routers read that as "no match"."""
 	if not re.search(r"\broles?\b", text or "", re.IGNORECASE) or access_arguments(text):
 		return None
 	if OWN_ROLES.search(text):
-		return {}
+		return {"user": None}
 	email = EMAIL.search(text)
 	if email:
 		return {"user": email.group(0)}
