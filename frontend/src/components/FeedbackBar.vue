@@ -97,18 +97,18 @@ async function submit(value, text = "") {
 
 		<div
 			v-if="open"
-			class="mt-1.5 rounded-lg border border-outline-gray-2 bg-surface-white p-2.5"
+			class="mt-2 rounded-lg border border-outline-gray-2 bg-surface-white p-2.5"
 		>
 			<textarea
 				ref="commentEl"
 				v-model="comment"
 				rows="2"
 				:maxlength="COMMENT_LIMIT"
-				class="flow-textarea w-full resize-none rounded-md border border-outline-gray-2 bg-surface-white px-2.5 py-2 text-sm text-ink-gray-9 outline-none focus:border-outline-gray-3"
+				class="flow-textarea w-full resize-none rounded-[10px] border border-outline-gray-2 bg-surface-white px-3 py-2 text-sm text-ink-gray-9 outline-none focus:border-outline-gray-3"
 				:placeholder="__('What went wrong? How should it respond instead?')"
 				@keydown.esc="cancel"
 			></textarea>
-			<div class="mt-1.5 flex justify-end gap-1.5">
+			<div class="mt-2 flex justify-end gap-2">
 				<Button variant="ghost" :label="__('Cancel')" @click="cancel" />
 				<Button
 					variant="solid"

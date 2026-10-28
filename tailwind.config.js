@@ -19,20 +19,20 @@ export default {
 			fontSize: {
 				"2xs": [
 					"12px",
-					{ lineHeight: "1.15", letterSpacing: "0.01em", fontWeight: "420" },
+					{ lineHeight: "1.15", letterSpacing: "0" },
 				],
-				xs: ["13px", { lineHeight: "1.15", letterSpacing: "0.02em", fontWeight: "420" }],
-				sm: ["14px", { lineHeight: "1.15", letterSpacing: "0.02em", fontWeight: "420" }],
-				base: ["15px", { lineHeight: "1.15", letterSpacing: "0.02em", fontWeight: "420" }],
-				lg: ["17px", { lineHeight: "1.15", letterSpacing: "0.02em", fontWeight: "400" }],
-				xl: ["19px", { lineHeight: "1.15", letterSpacing: "0.01em", fontWeight: "400" }],
+				xs: ["13px", { lineHeight: "1.5", letterSpacing: "0" }],
+				sm: ["14px", { lineHeight: "1.5", letterSpacing: "0" }],
+				base: ["15px", { lineHeight: "1.6", letterSpacing: "0" }],
+				lg: ["17px", { lineHeight: "1.15", letterSpacing: "0" }],
+				xl: ["19px", { lineHeight: "1.15", letterSpacing: "0" }],
 				"2xl": [
 					"21px",
-					{ lineHeight: "1.15", letterSpacing: "0.01em", fontWeight: "400" },
+					{ lineHeight: "1.15", letterSpacing: "0" },
 				],
 				"3xl": [
 					"25px",
-					{ lineHeight: "1.15", letterSpacing: "0.005em", fontWeight: "400" },
+					{ lineHeight: "1.15", letterSpacing: "0" },
 				],
 			},
 		},

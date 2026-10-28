@@ -17,7 +17,7 @@ const visible = computed(() => (showAll.value ? props.items : props.items.slice(
 		<span
 			v-for="(item, i) in visible"
 			:key="i"
-			class="rounded-md bg-surface-gray-2 px-2.5 py-1 text-xs text-ink-gray-8"
+			class="rounded-[6px] bg-surface-gray-2 px-3 py-1 text-xs text-ink-gray-8"
 		>
 			{{ formatScalar(item) }}
 		</span>

@@ -8,21 +8,29 @@ import { __ } from "@/lib/translate";
 const props = defineProps({ onToggleFullscreen: { type: Function, default: null } });
 const emit = defineEmits(["close"]);
 const { recentSessions, switchSession, newChat, fullscreen, modelLoadingStatus } = useStore();
+// The site's company (from the desk boot data), else the host, beside the "Online" status.
+const site = frappe?.boot?.sysdefaults?.company || window.location.hostname;
 </script>
 
 <template>
 	<header class="flow-header">
-		<BrandMark :size="24" />
-		<span class="ml-0.5 text-[15px] font-semibold tracking-tight text-ink-gray-9">{{
-			__("Flow")
-		}}</span>
-		<span
-			v-if="modelLoadingStatus"
-			class="flow-shimmer-text ml-2 max-w-[220px] truncate text-xs text-ink-gray-5"
-			:title="modelLoadingStatus"
-		>
-			{{ modelLoadingStatus }}
-		</span>
+		<BrandMark :size="40" />
+		<div class="ml-1 flex min-w-0 flex-col leading-tight">
+			<span class="text-[17px] font-semibold tracking-tight text-ink-gray-9">{{
+				__("Flow")
+			}}</span>
+			<span
+				v-if="modelLoadingStatus"
+				class="flow-shimmer-text max-w-[220px] truncate text-xs text-ink-gray-5"
+				:title="modelLoadingStatus"
+			>
+				{{ modelLoadingStatus }}
+			</span>
+			<span v-else class="flex min-w-0 items-center gap-1.5 text-xs text-ink-gray-5">
+				<span class="h-2 w-2 shrink-0 rounded-full bg-[#34c759]"></span>
+				<span class="truncate">{{ __("Online") }} · {{ site }}</span>
+			</span>
+		</div>
 		<span class="flex-1"></span>
 
 		<SessionsMenu :sessions="recentSessions" @select="switchSession" />

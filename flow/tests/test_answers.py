@@ -428,7 +428,9 @@ class TestRoleQuestions(IntegrationTestCase):
 	def test_user_roles_for_the_asker_and_for_another_user(self):
 		from flow.tools.answers import user_roles, user_roles_arguments
 
-		self.assertEqual(user_roles_arguments("what roles do I have?"), {})
+		own = user_roles_arguments("what roles do I have?")
+		self.assertEqual(own, {"user": None})
+		self.assertTrue(own)  # an empty dict would read as "no route"
 		self.assertEqual(user_roles_arguments(f"what roles does {self.user.name} have"), {"user": self.user.name})
 		self.assertIsNone(user_roles_arguments("which roles can create a ToDo"))
 		self.assertIn(self.role.name, user_roles.func(user=self.user.name)["answer"])
