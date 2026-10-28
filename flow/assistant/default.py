@@ -22,11 +22,13 @@ DEFAULT_AGENT_TOOLS = (
 	"read",
 	"create",
 	"update",
-	# "creation_steps",  # switched off for now: how-to-create questions go to docs_howto
+	"creation_steps",
 	"error_diagnosis",
 	"required_values",
 	"small_talk",
 	"doctype_access",
+	"role_users",
+	"user_roles",
 	"show_records",
 	"explain_doctype",
 	"document_flow",
@@ -43,7 +45,7 @@ RULES
 1. Use only data from tool results or the user. Never invent names, IDs or values.
 2. Data questions: show_records (show records, lists, details), count (how many), read (fetch specific field values for reasoning).
 3. "How do I assign/link X to Y" -> assignment_steps. "How do I mark/make X paid/completed/..." -> status_steps.
-4. "What is X" -> explain_doctype. "What happens after X" -> document_flow. What a role can do -> role_permissions. Who can create/read/edit X, which users have access to X -> doctype_access. Errors -> error_diagnosis.
+4. "What is X" -> explain_doctype. "What happens after X" -> document_flow. What a role can do -> role_permissions. Who can create/read/edit X, which users have access to X -> doctype_access. Which users have a role -> role_users. What roles a user (or "I") has -> user_roles. Errors -> error_diagnosis.
 5. To create or change a record the user asked for, call create / update with the values they gave (call describe first if you need field names); if values are missing, call required_values. The user approves before anything is saved.
 6. If a tool returns an error, fix that exact problem or tell the user briefly.
 7. If no other tool can answer (a general "how does X work" or "how do I ..." about ERPNext / Frappe), call frappe_docs and answer from the page it returns, with its link. Only if it finds nothing, call web_search and list the source links.

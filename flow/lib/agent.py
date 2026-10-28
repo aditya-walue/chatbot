@@ -760,7 +760,7 @@ TOOL_GROUPS: tuple[tuple[re.Pattern, tuple[str, ...]], ...] = tuple(
 		(r"\b(how\b.*\b(mark|status|paid|submit|cancel|close)|mark\b.*\b(paid|status))\b", ("status_steps", "document_flow")),
 		(r"\b(how (do|to|can|should)|steps?|guide|procedure)\b", ("frappe_docs",)),
 		# Explain: roles and permissions
-		(r"\b(role|roles|permission|permissions|access|access rights?|privilege)\b", ("doctype_access", "role_permissions", "explain_doctype")),
+		(r"\b(role|roles|permission|permissions|access|access rights?|privilege)\b", ("doctype_access", "role_users", "user_roles", "role_permissions", "explain_doctype")),
 		# Explain: document workflow & lifecycle
 		(r"\b(after|next|process|flow|workflow|approv\w*|cycle|stage)\b", ("document_flow", "explain_doctype")),
 		# Explain: DocType definition

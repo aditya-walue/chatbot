@@ -348,18 +348,25 @@ async function send(text) {
 	requestScroll(true);
 
 	try {
-		await startRun(
-			{
-				input: text,
-				...(files.length && { attachments: files }),
-				...(sessionName.value && { session: sessionName.value }),
-				...(selectedAgent.value && !sessionName.value && { agent: selectedAgent.value }),
-				...(selectedModel.value && { model: selectedModel.value }),
-				...currentPage(),
-			},
-			(event) => handleEvent(event, assistant),
-			abortController.signal
-		);
+		const params = {
+			input: text,
+			...(files.length && { attachments: files }),
+			...(sessionName.value && { session: sessionName.value }),
+			...(selectedAgent.value && !sessionName.value && { agent: selectedAgent.value }),
+			...(selectedModel.value && { model: selectedModel.value }),
+			...currentPage(),
+		};
+		const run = () =>
+			startRun(params, (event) => handleEvent(event, assistant), abortController.signal);
+		try {
+			await run();
+		} catch (e) {
+			// This panel allows one send at a time, so a "run in progress" here is a run whose
+			// stream died (stalled model load, worker restart): clear it and send once more.
+			if (!isRunInProgress(e) || !sessionName.value) throw e;
+			await api.recoverSession(sessionName.value);
+			await run();
+		}
 	} catch (e) {
 		if (e.name === "AbortError") assistant.pending = false;
 		else failMessage(assistant, e);
@@ -370,6 +377,10 @@ async function send(text) {
 		requestScroll();
 		focusTick.value++;
 	}
+}
+
+function isRunInProgress(e) {
+	return /already has a run in progress/i.test(String(e?.message || e));
 }
 
 let resumeInProgress = false;
@@ -411,10 +422,10 @@ function stopRun() {
 	if (!sending.value) return;
 	abortController?.abort();
 	const rn = runName.value;
-	// Stopped before run_started arrived: no run name yet, so finalize any Running
-	// run on the session instead so the next turn isn't briefly blocked.
+	// runName still holds the previous turn's run until run_started arrives, so also fail
+	// whatever is Running on the session; otherwise the next send is blocked.
 	if (rn) api.stopRun(rn).catch(() => {});
-	else if (sessionName.value) api.recoverSession(sessionName.value).catch(() => {});
+	if (sessionName.value) api.recoverSession(sessionName.value).catch(() => {});
 }
 
 // Record thumbs feedback on a finished turn (rating "None" clears it). A Down comment

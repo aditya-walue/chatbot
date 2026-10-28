@@ -80,7 +80,7 @@ def describe(
 	"""Fields of a DocType (fieldname, label, type, required, options), your permissions, whether it is
 	submittable and its workflow, so you can pick field names before create/update. Link fields hold the
 	name of a record of their `options` DocType; Table fields hold a list of row objects of it. Not for
-	values (use read) or user guides (use frappe_docs)."""
+	values (use read) or user guides (use creation_steps)."""
 	if not frappe.has_permission(doctype, "read"):
 		raise PermissionError(f"No permission to read {doctype}")
 
@@ -1757,6 +1757,8 @@ from flow.tools.answers import (  # noqa: E402
 	assignment_steps,
 	document_flow,
 	doctype_access,
+	role_users,
+	user_roles,
 	explain_doctype,
 	role_permissions,
 	show_records,
@@ -1768,7 +1770,7 @@ from flow.tools.web import docs_howto, frappe_docs, web_search  # noqa: E402
 BUILTIN_TOOLS: list[Tool] = [
 	find_doctypes,
 	describe,
-	# creation_steps,  # switched off for now: how-to-create questions go to docs_howto
+	creation_steps,
 	required_values,
 	small_talk,
 	error_diagnosis,
@@ -1779,6 +1781,8 @@ BUILTIN_TOOLS: list[Tool] = [
 	status_steps,
 	role_permissions,
 	doctype_access,
+	role_users,
+	user_roles,
 	frappe_docs,
 	docs_howto,
 	web_search,

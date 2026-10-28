@@ -1092,6 +1092,13 @@ def role_permissions(
 	if not frappe.has_permission("Role", "read"):
 		raise PermissionError("No permission to read roles")
 	if not frappe.db.exists("Role", role):
+		# A DocType or placeholder here means the question is about something else; an error lets
+		# the model pick the right tool instead of showing a confident wrong answer.
+		if not re.search(r"[A-Za-z0-9]", role or "") or frappe.db.exists("DocType", role):
+			raise ValueError(
+				f"{role!r} is not a role. For which roles can do something on a DocType use doctype_access; "
+				"for the users holding a role use role_users; for a user's own roles use user_roles."
+			)
 		matches = frappe.get_all("Role", filters={"name": ["like", f"%{role}%"]}, pluck="name", limit=5)
 		hint = f" Did you mean: {', '.join(matches)}?" if matches else ""
 		return {"answer": f"There is no role named **{role}**.{hint}"}
@@ -1239,6 +1246,97 @@ def _users_by_role(roles: list[str]) -> dict[str, list[str]]:
 			label = people[h.parent].full_name or h.parent
 			out.setdefault(h.role, []).append(f"{label} ({h.parent})" if label != h.parent else h.parent)
 	return {role: sorted(names) for role, names in out.items()}
+
+
+# ── role_users / user_roles ────────────────────────────────────────────────────────────────
+
+ROLE_USERS_LIMIT = 50
+# "my roles", "which roles do I have": the asker's own roles.
+OWN_ROLES = re.compile(r"\b(?:my\s+roles?|roles?\s+(?:do\s+)?(?:i|we)\s+(?:have|hold|got)|roles?\s+(?:am\s+i|i\s+am|i\s+was)\s+(?:given|assigned|in))\b", re.IGNORECASE)
+EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+
+
+def _name_in_text(text: str, names: list[str]) -> str | None:
+	"""The longest of `names` that appears in the text as whole words, ignoring case."""
+	lowered = (text or "").lower()
+	for name in sorted(filter(None, names), key=len, reverse=True):
+		if re.search(rf"(?<![\w]){re.escape(name.lower())}(?![\w])", lowered):
+			return name
+	return None
+
+
+def role_users_arguments(text: str) -> dict[str, Any] | None:
+	"""role_users() arguments for "which users have the Sales Manager role", or None. The role
+	must exist on this site and be named in the message; who-can-do-X-on-a-DocType questions
+	belong to doctype_access."""
+	if not WHO_ASKS.search(text or "") or access_arguments(text):
+		return None
+	role = _name_in_text(WHO_ASKS.sub(" ", text), frappe.get_all("Role", pluck="name", limit=0))
+	return {"role": role} if role else None
+
+
+def user_roles_arguments(text: str) -> dict[str, Any] | None:
+	"""user_roles() arguments for "what roles do I have" ({}) or "what roles does <user> have", or None."""
+	if not re.search(r"\broles?\b", text or "", re.IGNORECASE) or access_arguments(text):
+		return None
+	if OWN_ROLES.search(text):
+		return {}
+	email = EMAIL.search(text)
+	if email:
+		return {"user": email.group(0)}
+	if not frappe.has_permission("User", "read"):
+		return None
+	users = frappe.get_all("User", filters={"enabled": 1, "user_type": "System User"}, fields=["name", "full_name"], limit=0)
+	label = _name_in_text(text, [u.full_name for u in users])
+	return {"user": next(u.name for u in users if u.full_name == label)} if label else None
+
+
+@tool(
+	final_answer=True,
+	route=lambda text: role_users_arguments(text),
+	laya=LayaRoute("RECORD_LOOKUP", lambda text, signals: role_users_arguments(text)),
+)
+def role_users(role: Annotated[str, 'Role name, e.g. "Sales Manager".']) -> dict[str, Any]:
+	"""The enabled users who hold a role ("which users have the Sales Manager role", "who is an
+	Accounts User"). Not what the role can do (role_permissions). Changes nothing."""
+	if not (frappe.has_permission("Role", "read") and frappe.has_permission("User", "read")):
+		raise PermissionError("No permission to read roles and users")
+	if not frappe.db.exists("Role", role):
+		matches = frappe.get_all("Role", filters={"name": ["like", f"%{role}%"]}, pluck="name", limit=5)
+		hint = f" Did you mean: {', '.join(matches)}?" if matches else ""
+		raise ValueError(f"There is no role named {role}.{hint}")
+	names = _users_by_role([role]).get(role, [])
+	if not names:
+		return {"role": role, "users": [], "answer": f"No enabled user holds the role **{role}**."}
+	more = f"\n…and {len(names) - ROLE_USERS_LIMIT} more." if len(names) > ROLE_USERS_LIMIT else ""
+	lines = [f"**{len(names)}** user{'s' if len(names) != 1 else ''} hold the role **{role}**:", ""]
+	lines += [f"- {name}" for name in names[:ROLE_USERS_LIMIT]]
+	return {"role": role, "users": names, "answer": "\n".join(lines) + more}
+
+
+@tool(
+	final_answer=True,
+	route=lambda text: user_roles_arguments(text),
+	laya=LayaRoute("RECORD_LOOKUP", lambda text, signals: user_roles_arguments(text)),
+)
+def user_roles(
+	user: Annotated[str | None, "User ID (email). Omit for the person asking."] = None,
+) -> dict[str, Any]:
+	"""The roles a user has ("what roles do I have", "which roles does <user> have"). Omit `user` for
+	the person asking. Not what a role can do (role_permissions). Changes nothing."""
+	from frappe.permissions import AUTOMATIC_ROLES
+
+	own = not user or user == frappe.session.user
+	if not own and not frappe.has_permission("User", "read"):
+		raise PermissionError("No permission to read users")
+	target = frappe.session.user if own else user
+	if not frappe.db.exists("User", target):
+		raise ValueError(f"There is no user {user}.")
+	roles = sorted(set(frappe.get_roles(target)) - set(AUTOMATIC_ROLES))
+	who = "You have" if own else f"**{target}** has"
+	if not roles:
+		return {"user": target, "roles": [], "answer": f"{who} no roles besides the automatic ones."}
+	return {"user": target, "roles": roles, "answer": f"{who} **{len(roles)}** role{'s' if len(roles) != 1 else ''}:\n\n" + "\n".join(f"- {r}" for r in roles)}
 
 
 def _role_rules(role: str, doctype: str | None, fields: list[str] | None = None) -> dict[str, dict[str, Any]]:
