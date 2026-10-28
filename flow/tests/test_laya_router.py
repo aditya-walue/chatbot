@@ -145,11 +145,9 @@ class TestLayaRouter(IntegrationTestCase):
 		self.assertEqual(log.outcome, "Fallback")
 		self.assertIn("below", log.reason)
 
-	def test_howto_to_create_goes_to_the_docs_while_creation_steps_is_switched_off(self):
-		from flow.tools.builtins import BUILTIN_TOOLS
-
-		self.assertNotIn("creation_steps", [t.name for t in BUILTIN_TOOLS])
-		self.assertEqual(self._route(_laya("HOWTO", 0.9), "guide me through adding a todo")[0], "docs_howto")
+	def test_howto_to_create_goes_to_creation_steps(self):
+		result = self._route(_laya("HOWTO", 0.9), "guide me through adding a todo")
+		self.assertEqual(result[0], "creation_steps")
 
 	def test_any_other_confident_howto_goes_to_the_docs_not_the_chat_model(self):
 		result = self._route(_laya("HOWTO", 0.91), "how to convert a widget to a gadget?")
@@ -232,8 +230,8 @@ class TestLayaRouter(IntegrationTestCase):
 		self.assertEqual(seen, [(0.7, 0.8)])
 
 	def test_howto_routes_only_requests_to_create(self):
-		self.assertEqual(self._route(_laya("HOWTO", 0.9), "walk me through setting up a new todo")[0], "docs_howto")
-		self.assertEqual(self._route(_laya("HOWTO", 0.9), "what are the steps for making a note?")[0], "docs_howto")
+		self.assertEqual(self._route(_laya("HOWTO", 0.9), "walk me through setting up a new todo")[0], "creation_steps")
+		self.assertEqual(self._route(_laya("HOWTO", 0.9), "what are the steps for making a note?")[0], "creation_steps")
 		# How-to questions about doing something else with a DocType use their own tools.
 		self.assertEqual(
 			self._route(_laya("HOWTO", 0.92), "could you tell me how to get this todo marked as closed"),

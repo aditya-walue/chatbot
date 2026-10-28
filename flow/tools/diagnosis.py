@@ -305,12 +305,25 @@ def _find_in_source(message: str) -> list[dict[str, Any]]:
 		+ [(n, False) for n in _trimmed_windows(message)]
 		+ [(n, True) for n in _leading_words(message)]
 	):
+		exact = needle == message.strip(" .")
 		hits = _search(needle, translated_only)
+		if not exact:
+			hits = [h for h in hits if _fits_message(h["file"], message)]
 		if hits:
 			hits.sort(key=lambda h: not any(m in h["line_text"] for m in RAISE_MARKERS))
 			# A partial match is a guess: show only the best one.
-			return hits[: MAX_SOURCE_MATCHES if needle == message.strip(" .") else 1]
+			return hits[: MAX_SOURCE_MATCHES if exact else 1]
 	return []
+
+
+def _fits_message(file: str, message: str) -> bool:
+	"""A partial match inside one DocType's own folder is relevant only when the message names that
+	DocType: "Mandatory fields required in Sales Order" shares its start with a Payroll Entry
+	script's message, which says nothing about where this one is raised."""
+	found = re.search(r"/doctype/([^/]+)/", file.replace(os.sep, "/"))
+	if not found:
+		return True
+	return found.group(1).replace("_", " ") in message.lower().replace("_", " ")
 
 
 def _needles(message: str) -> list[str]:

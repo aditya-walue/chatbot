@@ -34,6 +34,14 @@ class TestErrorDiagnosis(IntegrationTestCase):
 		self.assertNotIn("```", answer)  # location only, never code
 		self.assertIn("doesn't exist", answer)
 
+	def test_a_partial_match_in_another_doctypes_folder_is_not_offered(self):
+		from flow.tools.diagnosis import _fits_message
+
+		other = "erpnext/accounts/doctype/payment_entry/payment_entry.js"
+		self.assertFalse(_fits_message(other, "Mandatory fields required in Sales Order: Delivery Date"))
+		self.assertTrue(_fits_message(other, "Mandatory fields required in Payment Entry: Party"))
+		self.assertTrue(_fits_message("frappe/model/base_document.py", "Mandatory fields required in Sales Order"))
+
 	def test_finds_the_script_saved_on_the_site_that_raises_it(self):
 		message = "Quarterly figures are locked for editing"
 		script = frappe.get_doc(

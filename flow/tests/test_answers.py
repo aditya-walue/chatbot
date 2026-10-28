@@ -380,3 +380,51 @@ class TestDocTypeAccess(IntegrationTestCase):
 		self.assertIsNone(access_arguments("show all sales invoices"))
 		self.assertIsNone(access_arguments("who has access to the moon"))
 		self.assertIsNone(access_arguments("how can i create a sales invoice"))
+
+
+class TestRoleQuestions(IntegrationTestCase):
+	"""Questions about roles and users that role_permissions must not be forced to answer."""
+
+	def setUp(self):
+		self.role = frappe.get_doc({"doctype": "Role", "role_name": "Flow Role Probe"}).insert()
+		self.user = frappe.get_doc(
+			{"doctype": "User", "email": "flow.role.probe@example.com", "first_name": "Probe", "send_welcome_email": 0, "roles": [{"role": self.role.name}]}
+		).insert()
+
+	def tearDown(self):
+		frappe.set_user("Administrator")
+		frappe.db.rollback()
+
+	def test_role_permissions_rejects_a_doctype_or_placeholder_as_the_role(self):
+		for bad in ("ToDo", "****", ""):
+			with self.assertRaises(ValueError) as caught:
+				role_permissions(role=bad)
+			self.assertIn("doctype_access", str(caught.exception))
+
+	def test_role_permissions_still_suggests_close_role_names(self):
+		self.assertIn("no role named", role_permissions(role="Flow Role Prob")["answer"])
+
+	def test_role_users_lists_the_users_holding_the_role(self):
+		from flow.tools.answers import role_users
+
+		answer = role_users.func(role=self.role.name)["answer"]
+		self.assertIn(self.user.name, answer)
+		with self.assertRaises(ValueError):
+			role_users.func(role="No Such Role Anywhere")
+
+	def test_role_users_route_needs_a_real_role_and_leaves_doctype_access_alone(self):
+		from flow.tools.answers import role_users_arguments
+
+		self.assertEqual(role_users_arguments(f"which users have the {self.role.name} role?"), {"role": self.role.name})
+		self.assertIsNone(role_users_arguments("which users can create a ToDo"))
+		self.assertIsNone(role_users_arguments("which users have the Nonexistent Probe role"))
+
+	def test_user_roles_for_the_asker_and_for_another_user(self):
+		from flow.tools.answers import user_roles, user_roles_arguments
+
+		self.assertEqual(user_roles_arguments("what roles do I have?"), {})
+		self.assertEqual(user_roles_arguments(f"what roles does {self.user.name} have"), {"user": self.user.name})
+		self.assertIsNone(user_roles_arguments("which roles can create a ToDo"))
+		self.assertIn(self.role.name, user_roles.func(user=self.user.name)["answer"])
+		frappe.set_user(self.user.name)
+		self.assertIn("You have", user_roles.func()["answer"])
