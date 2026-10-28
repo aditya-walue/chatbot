@@ -469,7 +469,7 @@ def _route_explain_doctype(text: str) -> dict[str, Any] | None:
 	return {"doctype": doctype} if doctype else None
 
 
-@tool(final_answer=True, route=_route_explain_doctype)
+@tool(final_answer=True, route=_route_explain_doctype, named_in_conversation="doctype")
 def explain_doctype(doctype: DocTypeArg) -> dict[str, Any]:
 	"""Explain what one DocType is: module, purpose, lifecycle, main fields and links. Use for
 	"what is <DocType>". Not for a module, app or feature as a whole ("how does payroll work"): use
@@ -519,7 +519,7 @@ def _route_document_flow(text: str) -> dict[str, Any] | None:
 	return {"doctype": doctype} if doctype else None
 
 
-@tool(final_answer=True, route=_route_document_flow)
+@tool(final_answer=True, route=_route_document_flow, named_in_conversation="doctype")
 def document_flow(doctype: DocTypeArg) -> dict[str, Any]:
 	"""Where a DocType sits in its business process: lifecycle, approval workflow, the documents
 	it is made from and the ones made from it next. Use for "what happens after <DocType>"."""

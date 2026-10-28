@@ -329,6 +329,7 @@ def small_talk(kind: Annotated[str, '"greeting" or "thanks".'] = "greeting") -> 
 	final_answer=True,
 	route=lambda text: _route_required_values(text),
 	laya=LayaRoute("CREATE", lambda text, signals: _laya_required_values(text)),
+	named_in_conversation="doctype",
 )
 def required_values(doctype: DocTypeArg) -> dict[str, Any]:
 	"""Ask for the values needed to create a record of a DocType, with an example line to fill
@@ -369,6 +370,7 @@ def required_values(doctype: DocTypeArg) -> dict[str, Any]:
 	final_answer=True,
 	route=lambda text: _route_creation_steps(text),
 	laya=LayaRoute("HOWTO", lambda text, signals: _laya_creation_steps(text)),
+	named_in_conversation="doctype",
 )
 def creation_steps(doctype: DocTypeArg) -> dict[str, Any]:
 	"""Steps to create a NEW record of a DocType by hand in the desk, from this site's required
@@ -607,8 +609,20 @@ def _creation_target(text: str) -> str | None:
 def _laya_creation_steps(text: str) -> dict[str, Any] | None:
 	# HOWTO covers any "how do I ..." but creation_steps only answers how to create a record,
 	# so it takes the message only when it asks to create the DocType it names.
+	if _is_create_command(text):
+		return None
 	doctype = _creation_target(text)
 	return {"doctype": doctype} if doctype else None
+
+
+def _is_create_command(text: str) -> bool:
+	"""A request to create a record with details ("create a customer named X"), which is a write
+	for the approval card, not a how-to, however Laya classifies it."""
+	match = CREATE_REQUEST.match(text or "")
+	if not match:
+		return False
+	words = match.group("rest").split()
+	return any(_doctype_from_phrase(" ".join(words[:n]).strip(":,;-")) and len(words) > n for n in range(min(4, len(words)), 0, -1))
 
 
 def _laya_required_values(text: str) -> dict[str, Any] | None:
@@ -706,8 +720,23 @@ def _parse_create_request(text: str) -> tuple[str, dict[str, Any]] | None:
 	rest = re.sub(r"^(?:with|for|having|where|:|-)\s+", "", rest, flags=re.IGNORECASE)
 	if not rest or rest.lower() in ("please", "for me", "now"):
 		return doctype, {}
-	record = _parse_values(doctype, rest)
+	record = _parse_values(doctype, rest) or _parse_name(doctype, rest)
 	return (doctype, record) if record else None
+
+
+NAME_PHRASE = re.compile(r"^(?:named|called|titled|name(?:d)?(?:\s+(?:is|as))?)\s+(?P<value>.+)$", re.IGNORECASE)
+
+
+def _parse_name(doctype: str, text: str) -> dict[str, Any] | None:
+	"""{title field: value} for "named X" / "with name X": the name a record is known by is the
+	DocType's own title field (or the field its naming rule takes the ID from)."""
+	match = NAME_PHRASE.match(text.strip())
+	if not match:
+		return None
+	meta = frappe.get_meta(doctype)
+	field = meta.title_field or (meta.autoname[len("field:") :] if (meta.autoname or "").startswith("field:") else None)
+	value = match.group("value").strip(" :=\"'")
+	return {field: value} if field and value and meta.get_field(field) else None
 
 
 def _parse_values(doctype: str, text: str) -> dict[str, Any] | None:

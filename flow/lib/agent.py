@@ -405,6 +405,15 @@ class Agent:
 		usage_total = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
 		routed = self._routed_response(messages) if route else None
+		if routed is None and route and (yield from self._outside_scope(messages)):
+			from flow.tools.web import OUT_OF_SCOPE
+
+			yield TextChunk(text=OUT_OF_SCOPE)
+			messages.append({"role": "assistant", "content": OUT_OF_SCOPE})
+			yield Done(
+				result=RunResult(output=OUT_OF_SCOPE, messages=messages, tool_calls=executed_calls, iterations=1, usage=usage_total)
+			)
+			return
 		failed_streak = 0
 		same_tool_streak, last_tools = 0, frozenset()
 		for iteration in range(1, self.max_iterations + 1):
@@ -575,6 +584,35 @@ class Agent:
 			self._trace_model(messages, tool_schemas, None, started, error=e)
 			raise
 
+	def _outside_scope(self, messages: list[dict[str, Any]]) -> Generator[Event, None, bool]:
+		"""Whether the browser model says the latest message is not about this site or ERPNext /
+		Frappe (a poem, a joke, general knowledge). A 3B model does not reliably follow "refuse
+		anything else" buried in a long prompt, but answers one short IN / OUT question well, so
+		it is asked that first. Only a clear OUT counts; anything else goes on to the answer.
+		Skipped for server models and when the site sets `flow_scope_check` off."""
+		from flow.lib.webllm import is_browser_model
+
+		if not is_browser_model(getattr(self.model, "model_id", None)) or not frappe.conf.get("flow_scope_check", True):
+			return False
+		users = [str(m.get("content") or "") for m in messages if m.get("role") == "user" and isinstance(m.get("content"), str)]
+		if not users:
+			return False
+		earlier = f"Earlier message: {users[-2][:200]}\n" if len(users) > 1 else ""
+		check = [
+			{"role": "system", "content": SCOPE_CHECK},
+			{"role": "user", "content": f"{earlier}Latest message: {users[-1][:400]}"},
+		]
+		call = self._stream_model(check, None)
+		try:
+			while True:
+				event = next(call)
+				# The IN / OUT word is for the server, never shown to the user.
+				if not isinstance(event, TextChunk):
+					yield event
+		except StopIteration as stop:
+			reply = (stop.value.content or "") if stop.value else ""
+		return reply.strip().lower().startswith("out")
+
 	def _begin_trace(self, messages: list[dict[str, Any]]) -> None:
 		"""Open the Opik trace for this run (a no-op unless tracing is on)."""
 		self._trace = tracing.start(
@@ -722,6 +760,8 @@ class Agent:
 		tool = self._redirect(call, tool, messages)
 		context = _grounding_text(messages) if messages is not None else None
 		problem = tool.precheck(call.arguments, context) if tool.precheck else None
+		if not problem and messages is not None and not call.id.startswith(ROUTED_PREFIX):
+			problem = _unmentioned(tool, call.arguments, messages, self.page)
 		if problem:
 			self._trace.span(call.name, type="tool", input=call.arguments, started=tracing.now(), error=problem)
 			return json.dumps({"error": problem})
@@ -816,9 +856,40 @@ def _recent_turns(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 	return system + messages[start:]
 
 
+# The one question the browser model is asked before it answers a message no route took.
+SCOPE_CHECK = (
+	"You filter messages for an assistant that helps with a company's ERPNext / Frappe site. "
+	"Reply with one word. IN: the message is about the site, its records, users, roles, settings, "
+	"reports or errors, or about how to do something in ERPNext / Frappe, or is a greeting, thanks, "
+	"or a short follow-up to the earlier message. OUT: anything else, such as a poem, a joke, general "
+	"knowledge, maths, coding or career advice, weather, news or a translation."
+)
+
+# Ids of tool calls made by a route; a call with another id was chosen by the model.
+ROUTED_PREFIX = "route_"
+
+
+def _unmentioned(tool: Tool, arguments: dict[str, Any], messages: list[dict[str, Any]], page: dict[str, str] | None) -> str | None:
+	"""An error for a model-chosen call whose `tool.named_in_conversation` argument names something
+	nobody mentioned (neither the user, a tool result, nor the open page), so the model asks
+	instead of answering about a guess."""
+	value = arguments.get(tool.named_in_conversation) if tool.named_in_conversation else None
+	if not isinstance(value, str) or not value.strip():
+		return None
+	seen = "\n".join(str(m.get("content") or "") for m in messages if m.get("role") in ("user", "tool")).lower()
+	seen += f"\n{(page or {}).get('doctype', '')}".lower()
+	words = [w for w in value.lower().replace("-", " ").split() if w]
+	if all((w[:-1] if len(w) > 3 and w.endswith("s") else w) in seen for w in words):
+		return None
+	return (
+		f"Nobody mentioned {value!r}. Do not guess: ask the user which {tool.named_in_conversation} they mean, "
+		"or use the one they named."
+	)
+
+
 def _routed_call(name: str, arguments: dict[str, Any]) -> ChatResponse:
 	"""A routed tool call, shaped like a model response that made it."""
-	call = ToolCall(id=f"route_{uuid.uuid4().hex[:12]}", name=name, arguments=arguments)
+	call = ToolCall(id=f"{ROUTED_PREFIX}{uuid.uuid4().hex[:12]}", name=name, arguments=arguments)
 	return ChatResponse(content=None, tool_calls=[call])
 
 

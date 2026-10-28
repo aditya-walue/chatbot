@@ -610,8 +610,14 @@ function appendText(msg, delta) {
 	else if (delta.trim()) msg.parts.push(makeTextPart(delta));
 }
 
+// What the browser says when the connection to the server drops mid-answer.
+const DROPPED = /network error|failed to fetch|load failed|networkerror/i;
+
 function failMessage(msg, error) {
-	appendText(msg, `\n\n${__("Error")}: ${error.message}`);
+	const reason = DROPPED.test(error.message || "")
+		? __("The connection dropped. The model may still be loading; try again in a minute.")
+		: error.message;
+	appendText(msg, `\n\n${__("Error")}: ${reason}`);
 	msg.pending = false;
 	// A dropped stream (network error, server restart) can leave the run marked Running on
 	// the server, which blocks the session's next turn; fail it so the user can retry at once.

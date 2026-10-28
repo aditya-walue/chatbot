@@ -8,9 +8,9 @@ from frappe.tests import IntegrationTestCase
 
 PAGE = """
 <div class="result results_links result--ad"><a class="result__a" href="https://ad.example">Ad</a></div>
-<div class="result results_links"><a class="result__a" href="https://docs.example/page">Doc page</a>
+<div class="result results_links"><a class="result__a" href="https://docs.frappe.io/page">Doc page</a>
 <a class="result__snippet">How it works.</a></div>
-<div class="result results_links"><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fforum.example%2Ft%2F1">Forum</a>
+<div class="result results_links"><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fdiscuss.frappe.io%2Ft%2F1">Forum</a>
 <a class="result__snippet">A thread.</a></div>
 """
 
@@ -26,9 +26,42 @@ class TestWebSearch(IntegrationTestCase):
 
 	def test_results_skip_ads_and_unwrap_redirects(self):
 		result, post = self._search()
-		self.assertEqual([r["url"] for r in result["results"]], ["https://docs.example/page", "https://forum.example/t/1"])
+		self.assertEqual([r["url"] for r in result["results"]], ["https://docs.frappe.io/page", "https://discuss.frappe.io/t/1"])
 		self.assertEqual(result["results"][0]["snippet"], "How it works.")
-		self.assertEqual(post.call_args.kwargs["data"], {"q": "how does x work"})
+		# Searched on the Frappe / ERPNext sources only.
+		self.assertTrue(post.call_args.kwargs["data"]["q"].startswith("how does x work (site:frappe.io"))
+
+	def test_results_from_other_sites_are_dropped_and_the_model_is_told_why(self):
+		from flow.tools.web import web_search
+
+		page = """
+		<div class="result"><a class="result__a" href="https://weather.example/today">Weather today</a>
+		<a class="result__snippet">Sunny.</a></div>
+		<div class="result"><a class="result__a" href="https://discuss.frappe.io/t/9">Unrelated forum thread</a>
+		<a class="result__snippet">Printing a report.</a></div>
+		<div class="result"><a class="result__a" href="https://github.com/other/repo">Not frappe</a></div>
+		<div class="result"><a class="result__a" href="https://github.com/frappe/erpnext/issues/1">An issue</a></div>
+		"""
+		response = MagicMock(text=page)
+		response.raise_for_status.return_value = None
+		with patch("requests.post", return_value=response):
+			result = web_search.func(query="erpnext issue")
+		self.assertEqual([r["url"] for r in result["results"]], ["https://github.com/frappe/erpnext/issues/1"])
+		# A page of a listed source that does not mention the question's words is no answer either.
+		forum = """<div class="result"><a class="result__a" href="https://discuss.frappe.io/t/9">Printing a report</a></div>"""
+		with patch("requests.post", return_value=MagicMock(text=forum, raise_for_status=lambda: None)):
+			empty = web_search.func(query="what is the weather today")
+		self.assertEqual(empty["results"], [])
+		self.assertIn("only", empty["answer_hint"])
+
+	def test_a_site_can_set_its_own_sources(self):
+		from flow.tools.web import _is_web_source
+
+		frappe.conf.flow_web_search_domains = ["example.org/docs"]
+		self.addCleanup(lambda: frappe.conf.pop("flow_web_search_domains", None))
+		self.assertTrue(_is_web_source("https://wiki.example.org/docs/page"))
+		self.assertFalse(_is_web_source("https://wiki.example.org/blog"))
+		self.assertFalse(_is_web_source("https://docs.frappe.io/page"))
 
 	def test_can_be_turned_off(self):
 		from flow.tools.web import web_search
@@ -131,6 +164,36 @@ class TestPreferredApps(IntegrationTestCase):
 			self.assertEqual(_preferred_apps("create a thing"), [{"app_b"}])
 
 
+class TestSectionCoverage(IntegrationTestCase):
+	def test_a_page_sharing_one_word_with_the_question_is_not_an_answer(self):
+		from flow.tools.web import pick_section
+
+		page = {"title": "Chat"}
+		text = "Chat with customers.\n\n## Invoices\n\nSend an invoice link in the chat."
+		score = pick_section([(page, text)], "get notified when an invoice becomes overdue")[3]
+		self.assertEqual(score, 0.0)
+		self.assertGreater(pick_section([(page, text)], "send an invoice link in the chat")[3], 0)
+
+
+class TestWordShare(IntegrationTestCase):
+	def test_a_section_with_only_the_rare_word_is_not_an_answer(self):
+		from flow.tools.web import pick_section
+
+		page = {"title": "Settings"}
+		text = "Settings page.\n\n## Maximum Recursion Depth\n\nSet the depth limit for recursion in automations.\n\n## Other\n\nMore."
+		self.assertEqual(pick_section([(page, text)], "explain recursion in simple words")[3], 0.0)
+		self.assertGreater(pick_section([(page, text)], "set the depth limit for recursion")[3], 0)
+
+
+class TestShortWordsDoNotCount(IntegrationTestCase):
+	def test_a_question_with_short_filler_words_is_still_answered(self):
+		from flow.tools.web import pick_section
+
+		page = {"title": "Stock"}
+		text = "Basics.\n\n## Opening Stock\n\nEnter the quantity per warehouse.\n\n## Other\n\nMore."
+		self.assertGreater(pick_section([(page, text)], "how add new stocks")[3], 0)
+
+
 class TestDocsHowto(IntegrationTestCase):
 	"""docs_howto answers a how-to question from the part of a docs page that fits it, no chat model."""
 
@@ -200,34 +263,33 @@ class TestDocsHowto(IntegrationTestCase):
 	def test_when_the_docs_have_nothing_the_web_results_are_the_answer(self):
 		from flow.tools.web import docs_howto
 
-		results = [{"title": "A forum thread", "url": "https://forum.example/t/1", "snippet": "Try the form."}]
+		results = [{"title": "Something nobody documented", "url": "https://discuss.frappe.io/t/1", "snippet": "Try the form."}]
 		with patch("requests.get", side_effect=self._empty), patch("flow.tools.web._installed_app_words", return_value=set()), patch(
 			"flow.tools.web._duckduckgo", return_value=results
 		) as web:
 			result = docs_howto.func(topic="something nobody documented")
-		web.assert_called_once_with("something nobody documented")
+		self.assertEqual(web.call_args.args[0].split(" (site:")[0], "something nobody documented")
 		self.assertIn("couldn't find this in the Frappe documentation", result["answer"])
-		self.assertIn("- [A forum thread](https://forum.example/t/1) — Try the form.", result["answer"])
+		self.assertIn("- [Something nobody documented](https://discuss.frappe.io/t/1) — Try the form.", result["answer"])
 
 	def test_docs_that_mention_none_of_the_words_count_as_having_nothing(self):
 		from flow.tools.web import docs_howto
 
 		with patch("requests.get", side_effect=self._get), patch("flow.tools.web._installed_app_words", return_value={"app"}), patch(
-			"flow.tools.web._duckduckgo", return_value=[{"title": "Elsewhere", "url": "https://web.example/x", "snippet": ""}]
+			"flow.tools.web._duckduckgo", return_value=[{"title": "A zebra xylophone note", "url": "https://docs.frappe.io/x", "snippet": ""}]
 		):
 			result = docs_howto.func(topic="zebra xylophone")
 		self.assertIn("web results may help", result["answer"])
 		self.assertNotIn("Frappe documentation says", result["answer"])
 
-	def test_nothing_in_the_docs_or_on_the_web_gives_no_answer_so_the_chat_model_takes_over(self):
-		from flow.tools.web import docs_howto
+	def test_nothing_in_the_docs_or_on_the_web_says_to_ask_about_erp(self):
+		from flow.tools.web import OUT_OF_SCOPE, docs_howto
 
 		with patch("requests.get", side_effect=self._empty), patch("flow.tools.web._installed_app_words", return_value=set()), patch(
 			"flow.tools.web._duckduckgo", return_value=[]
 		):
-			result = docs_howto.func(topic="something nobody documented")
-		self.assertNotIn("answer", result)
-		self.assertIn("Nothing found", result["answer_hint"])
+			result = docs_howto.func(topic="good morning in hindi")
+		self.assertEqual(result["answer"], OUT_OF_SCOPE)
 
 	def test_a_web_search_that_errors_leaves_it_to_the_chat_model(self):
 		from flow.tools.web import docs_howto
@@ -235,7 +297,9 @@ class TestDocsHowto(IntegrationTestCase):
 		with patch("requests.get", side_effect=self._empty), patch("flow.tools.web._installed_app_words", return_value=set()), patch(
 			"flow.tools.web._duckduckgo", side_effect=OSError("offline")
 		):
-			self.assertNotIn("answer", docs_howto.func(topic="anything at all"))
+			result = docs_howto.func(topic="anything at all")
+		self.assertNotIn("answer", result)
+		self.assertIn("can't be reached", result["answer_hint"])
 
 	def test_can_be_turned_off(self):
 		from flow.tools.web import docs_howto

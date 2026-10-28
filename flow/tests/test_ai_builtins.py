@@ -761,3 +761,16 @@ class TestTypoTolerantRoutes(IntegrationTestCase):
 		self.assertEqual(_route_creation_steps("how to create a new notifcation"), {"doctype": "Notification"})
 		self.assertIsNone(_route_count("how many people work here"))
 		self.assertIsNone(_route_count("how many systems"))
+
+
+class TestCreateByName(IntegrationTestCase):
+	def test_named_requests_fill_the_title_field_and_are_not_how_tos(self):
+		from flow.tools.builtins import _laya_creation_steps, _parse_create_request
+
+		for text in ("create a todo named probe", "create a todo with name probe"):
+			doctype, record = _parse_create_request(text) or (None, None)
+			self.assertEqual(doctype, "ToDo")
+			self.assertEqual(list(record.values()), ["probe"])
+			# A command with details is a write for the approval card, however Laya classifies it.
+			self.assertIsNone(_laya_creation_steps(text))
+		self.assertEqual(_laya_creation_steps("how do I create a todo"), {"doctype": "ToDo"})

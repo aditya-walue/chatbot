@@ -36,30 +36,85 @@ DOCS_TEXT_LIMIT = 3500
 RESULTS_LIMIT = 5
 TIMEOUT_SECONDS = 10
 QUERY_LIMIT = 200
+# Web results are kept to these sources (host suffix, path prefix); a site can set its own list in
+# `flow_web_search_domains` ("host" or "host/path" strings). Anything else is not about Frappe.
+DEFAULT_WEB_SOURCES = ("frappe.io", "frappe.school", "frappecloud.com", "erpnext.com", "github.com/frappe")
+RAW_RESULTS_LIMIT = 20  # read from the search, before the sources filter
+# Said when neither the docs nor the Frappe / ERPNext sources have anything on the question: it is
+# not about this site or ERPNext, and the chat model must not improvise an answer.
+OUT_OF_SCOPE = (
+	"I can only help with questions about this site and ERPNext / Frappe. "
+	"Ask me about your records, roles, or how to do something in ERPNext."
+)
 
 
 @tool
 def web_search(
 	query: Annotated[str, 'Search words, e.g. "ERPNext give a role permission on a doctype". No record IDs or personal data.'],
 ) -> dict[str, Any]:
-	"""Search the public web, only when no site tool or frappe_docs can answer. Answer from
-	the snippets in your own words and name the source links."""
+	"""Search Frappe / ERPNext sources on the web (docs, forum, GitHub, Frappe School), only when no
+	site tool or docs_howto can answer. It does not search the rest of the web: anything unrelated
+	to Frappe / ERPNext returns nothing. Answer from the snippets and name the source links."""
 	if _turned_off():
 		raise ValueError("Web search is turned off on this site.")
 	query = " ".join(str(query or "").split())[:QUERY_LIMIT]
 	if not query:
 		raise ValueError("Give the search words.")
-	results = _duckduckgo(query)
+	results = _scoped_search(query)
 	if not results:
-		return {"query": query, "results": [], "answer_hint": "No web results found."}
+		return {
+			"query": query,
+			"results": [],
+			"answer_hint": f"Nothing found in Frappe / ERPNext sources. Reply with exactly this and nothing else: {OUT_OF_SCOPE}",
+		}
 	return {"query": query, "results": results, "source": "DuckDuckGo"}
+
+
+def _web_sources() -> tuple[tuple[str, str], ...]:
+	"""(host suffix, path prefix) of every source web results may come from."""
+	configured = frappe.conf.get("flow_web_search_domains")
+	entries = configured if isinstance(configured, (list, tuple)) and configured else DEFAULT_WEB_SOURCES
+	out = []
+	for entry in entries:
+		host, _, path = str(entry).strip().lower().partition("/")
+		if host:
+			out.append((host, f"/{path}" if path else ""))
+	return tuple(out)
+
+
+def _is_web_source(url: str) -> bool:
+	parsed = urlparse(url)
+	host = (parsed.hostname or "").lower()
+	return any(
+		(host == source or host.endswith(f".{source}")) and parsed.path.lower().startswith(prefix)
+		for source, prefix in _web_sources()
+	)
+
+
+def _scoped_search(query: str) -> list[dict[str, str]]:
+	"""Web results for `query` from the Frappe / ERPNext sources only, so a question that has
+	nothing to do with them (the weather, the news) finds nothing instead of an answer."""
+	sites = " OR ".join(f"site:{host}{path}" for host, path in _web_sources())
+	found = _duckduckgo(f"{query} ({sites})", limit=RAW_RESULTS_LIMIT)
+	return [r for r in found if _is_web_source(r["url"]) and _mentions_query(r, query)][:RESULTS_LIMIT]
+
+
+def _mentions_query(result: dict[str, str], query: str) -> bool:
+	"""Whether a result's title, snippet or link holds at least half of the query's longer words
+	(5+ letters, matched on their first five). A search limited to some sites still returns pages
+	of those sites for any words, so this is what keeps "the weather today" from finding ERPNext."""
+	words = {w[:5] for w in re.findall(r"[a-z]+", query.lower()) if len(w) >= 5}
+	if not words:
+		return True
+	text = f"{result.get('title', '')} {result.get('snippet', '')} {result.get('url', '')}".lower()
+	return sum(w in text for w in words) * 2 >= len(words)
 
 
 def _turned_off() -> bool:
 	return str(frappe.conf.get("flow_web_search_enabled")).strip().lower() in ("0", "false", "no")
 
 
-def _duckduckgo(query: str) -> list[dict[str, str]]:
+def _duckduckgo(query: str, limit: int = RESULTS_LIMIT) -> list[dict[str, str]]:
 	import requests
 	from bs4 import BeautifulSoup
 
@@ -90,7 +145,7 @@ def _duckduckgo(query: str) -> list[dict[str, str]]:
 				"snippet": snippet.get_text(" ", strip=True) if snippet else "",
 			}
 		)
-		if len(results) >= RESULTS_LIMIT:
+		if len(results) >= limit:
 			break
 	return results
 
@@ -133,6 +188,11 @@ def _lookup_docs(query: str) -> dict[str, Any]:
 
 
 ANSWER_LIMIT = 1800
+# A section answers a question only when it holds at least this share of the question's own words of
+# 4+ letters, counted one each: a rare word alone carries nearly all the score, so "explain recursion
+# in simple words" would otherwise be answered by any page that merely mentions "recursion".
+# (Short words such as "how", "add" and "new" are left out: pages often lack them.)
+MIN_WORD_SHARE = 0.5
 SECTION_HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*$", re.M)
 IMAGE_LINE = re.compile(r"^\s*!\[[^\]]*\]\([^)]*\)\s*$", re.M)
 
@@ -169,11 +229,13 @@ def pick_section(pages: list[tuple[Any, str]], topic: str) -> tuple[Any, str | N
 	haystacks = [f"{heading or ''}\n{body}".lower() for _page, heading, body in parts]
 	weight = {w: math.log((len(parts) + 1) / (sum(w in h for h in haystacks) + 1)) for w in words}
 	best, best_score = parts[0], 0.0
+	long_words = {w for w in words if len(w) >= 4} or words
 	for (page, heading, body), haystack in zip(parts, haystacks):
 		score = sum(
 			weight[w] * (3 if heading and w in heading.lower() else 1) for w in words if w in haystack
 		)
-		if score > best_score:
+		shared = sum(w in haystack for w in long_words) / len(long_words)
+		if score > best_score and shared >= MIN_WORD_SHARE:
 			best, best_score = (page, heading, body), score
 	return (*best, best_score)
 
@@ -221,14 +283,16 @@ def docs_howto(
 
 
 def _web_fallback(topic: str) -> dict[str, Any]:
-	"""The docs have nothing on `topic`: the web results as they are (title, link, snippet), no
-	model in between. No answer, so the chat model takes over, when the search finds nothing too."""
+	"""The docs have nothing on `topic`: the Frappe / ERPNext web results as they are (title, link,
+	snippet), no model in between. When the search works and finds nothing, the question is not
+	about Frappe or ERPNext and the answer says so; when the search itself fails there is no answer,
+	so the chat model takes over."""
 	try:
-		results = _duckduckgo(" ".join(str(topic or "").split())[:QUERY_LIMIT])
+		results = _scoped_search(" ".join(str(topic or "").split())[:QUERY_LIMIT])
 	except Exception:
-		results = []
+		return {"query": topic, "page": None, "more": [], "answer_hint": "The Frappe documentation and web search can't be reached right now."}
 	if not results:
-		return {"query": topic, "page": None, "more": [], "answer_hint": "Nothing found in the Frappe documentation or on the web."}
+		return {"query": topic, "page": None, "more": [], "answer": OUT_OF_SCOPE}
 	lines = ["I couldn't find this in the Frappe documentation. These web results may help:", ""]
 	lines += [f"- [{r['title']}]({r['url']})" + (f" — {r['snippet']}" if r.get("snippet") else "") for r in results]
 	return {"query": topic, "page": None, "results": results, "source": "DuckDuckGo", "answer": "\n".join(lines)}

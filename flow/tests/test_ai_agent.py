@@ -1077,3 +1077,79 @@ class TestPageContext(IntegrationTestCase):
 		finally:
 			frappe.conf.flow_laya_enabled = None
 
+
+
+class TestGuessedArguments(IntegrationTestCase):
+	"""A model-chosen call about a record type nobody mentioned is bounced back, not answered."""
+
+	def _invoke(self, call_id, doctype, user_text, page=None, tool_text=None):
+		import json
+
+		from flow.lib.agent import Agent
+		from flow.lib.model import ToolCall
+		from flow.tools.answers import explain_doctype
+
+		messages = [{"role": "user", "content": user_text}]
+		if tool_text:
+			messages.append({"role": "tool", "tool_call_id": "t1", "content": tool_text})
+		agent = Agent(model=FakeModel([]), tools=[explain_doctype])
+		agent.page = page
+		raw = agent._invoke(ToolCall(id=call_id, name="explain_doctype", arguments={"doctype": doctype}), messages)
+		return json.loads(raw) if isinstance(raw, str) else raw
+
+	def test_an_unmentioned_doctype_is_refused_so_the_model_asks(self):
+		result = self._invoke("call_1", "ToDo", "what is this")
+		self.assertIn("Nobody mentioned", result["error"])
+
+	def test_a_doctype_the_user_named_in_any_form_is_answered(self):
+		for text in ("what is a todo", "explain todos please"):
+			self.assertIn("answer", self._invoke("call_1", "ToDo", text))
+
+	def test_the_open_page_or_an_earlier_result_counts_as_mentioned(self):
+		self.assertIn("answer", self._invoke("call_1", "ToDo", "what is this", page={"doctype": "ToDo", "name": ""}))
+		self.assertIn("answer", self._invoke("call_1", "ToDo", "what is this", tool_text='{"doctype": "ToDo"}'))
+
+	def test_a_routed_call_is_not_second_guessed(self):
+		# A route reads the DocType from the user's own message (even misspelt), so it is trusted.
+		self.assertIn("answer", self._invoke("route_abc", "ToDo", "what is this"))
+
+
+class TestScopeCheck(IntegrationTestCase):
+	"""A browser model is asked one IN / OUT question before it answers a message no route took."""
+
+	def _run(self, replies, text="write a short poem about rain"):
+		from flow.lib.agent import Agent, Done, TextChunk
+
+		model = FakeModel([ChatResponse(content=r) for r in replies])
+		model.model_id = "webllm/test-model"
+		events = list(Agent(model=model, tools=[]).run(text, stream=True))
+		shown = "".join(e.text for e in events if isinstance(e, TextChunk))
+		output = next(e.result.output for e in events if isinstance(e, Done))
+		return model, shown, output
+
+	def test_out_ends_the_turn_with_the_fixed_reply_and_one_model_call(self):
+		from flow.tools.web import OUT_OF_SCOPE
+
+		model, shown, output = self._run(["OUT"])
+		self.assertEqual((shown, output), (OUT_OF_SCOPE, OUT_OF_SCOPE))
+		self.assertEqual(len(model.calls), 1)
+
+	def test_in_goes_on_to_the_answer_and_the_word_is_never_shown(self):
+		model, shown, output = self._run(["IN", "Rain is water."], text="what is rain on the site")
+		self.assertEqual((shown, output), ("Rain is water.", "Rain is water."))
+		self.assertEqual(len(model.calls), 2)
+
+	def test_an_unclear_reply_counts_as_in(self):
+		model, _shown, output = self._run(["Hmm, maybe?", "An answer."])
+		self.assertEqual(output, "An answer.")
+
+	def test_server_models_and_a_site_switch_skip_the_check(self):
+		from flow.lib.agent import Agent, Done
+
+		plain = FakeModel([ChatResponse(content="Direct.")])
+		events = list(Agent(model=plain, tools=[]).run("write a poem", stream=True))
+		self.assertEqual(next(e.result.output for e in events if isinstance(e, Done)), "Direct.")
+		frappe.conf.flow_scope_check = 0
+		self.addCleanup(lambda: frappe.conf.pop("flow_scope_check", None))
+		model, _shown, output = self._run(["Direct."])
+		self.assertEqual((output, len(model.calls)), ("Direct.", 1))

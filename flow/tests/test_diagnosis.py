@@ -89,17 +89,19 @@ class TestErrorDiagnosis(IntegrationTestCase):
 		self.assertIn("**Recent occurrences**", answer)
 		self.assertIn(log.name, answer)
 
-	def test_unknown_message_asks_for_context(self):
+	def test_a_text_nothing_explains_is_left_to_the_chat_model(self):
+		# Laya can send any text here ("i dont understand anything"); with nothing found there is
+		# no canned answer, so the model replies, guided by the hint.
 		with patch("flow.tools.diagnosis._docs_help", return_value=None):
-			answer = error_diagnosis(error="Zzq flux capacitor overheated near the gizmo")["answer"]
-		self.assertIn("couldn't find this message", answer)
+			result = error_diagnosis(error="Zzq flux capacitor overheated near the gizmo")
+		self.assertNotIn("answer", result)
+		self.assertIn("not an error report", result["answer_hint"])
 
 	def test_a_message_nothing_on_the_site_explains_goes_to_the_docs(self):
 		with patch("flow.tools.diagnosis._docs_help", return_value="Docs say: restart the flux.") as docs:
 			answer = error_diagnosis(error="Zzq flux capacitor overheated near the gizmo")["answer"]
 		docs.assert_called_once()
 		self.assertIn("**From the documentation**\nDocs say: restart the flux.", answer)
-		self.assertNotIn("couldn't find this message", answer)
 
 	def test_the_docs_are_not_asked_when_the_site_already_explains_it(self):
 		with patch("flow.tools.diagnosis._docs_help") as docs:
@@ -144,7 +146,46 @@ class TestErrorDiagnosis(IntegrationTestCase):
 
 	def test_website_users_get_no_source_code(self):
 		frappe.set_user("Guest")
-		answer = error_diagnosis(error="Icon is not correctly configured please check the workspace sidebar to it")[
-			"answer"
-		]
-		self.assertNotIn("desktop.js", answer)
+		result = error_diagnosis(error="Icon is not correctly configured please check the workspace sidebar to it")
+		self.assertNotIn("desktop.js", str(result))
+
+
+class TestDiagnosisNoise(IntegrationTestCase):
+	def test_the_diagnosis_module_is_not_searched_as_app_source(self):
+		from flow.tools import diagnosis
+
+		diagnosis._source_files.cache_clear()
+		self.assertNotIn(diagnosis.THIS_FILE, diagnosis._source_files())
+
+	def test_a_short_label_is_not_searched_in_site_scripts_and_print_formats(self):
+		from unittest.mock import patch
+
+		from flow.tools import diagnosis
+
+		seen = []
+		with (
+			patch.object(diagnosis, "_can_read_source", return_value=True),
+			patch("frappe.get_list", side_effect=lambda dt, **k: seen.extend(f[2] for f in k.get("or_filters", [])[:1]) or []),
+		):
+			diagnosis._find_in_site_code("Mandatory fields required in Probe Doc: Delivery Date")
+		self.assertTrue(seen)
+		self.assertTrue(all(len(n.strip("%")) >= diagnosis.MIN_SITE_FRAGMENT for n in seen))
+
+	def test_an_exception_name_alone_does_not_pull_in_unrelated_error_logs(self):
+		from unittest.mock import patch
+
+		from flow.tools import diagnosis
+
+		with patch("frappe.get_list", return_value=[]) as get_list:
+			self.assertEqual(diagnosis._recent_error_logs("some message that is in no log", "ValidationError"), [])
+		self.assertEqual(get_list.call_count, 1)
+
+	def test_the_out_of_scope_reply_is_not_taken_as_help_with_an_error(self):
+		from unittest.mock import patch
+
+		from flow.tools import diagnosis
+		from flow.tools.web import OUT_OF_SCOPE
+
+		with patch("flow.tools.web.docs_howto") as docs:
+			docs.func.return_value = {"answer": OUT_OF_SCOPE}
+			self.assertIsNone(diagnosis._docs_help("i dont understand anything at all", ""))

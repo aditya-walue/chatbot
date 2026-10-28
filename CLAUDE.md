@@ -69,7 +69,7 @@ test_ai_assistant test_session test_ai_triggers test_ai_model test_knowledge tes
   messages and tool results, so `flow_opik_capture_content` false sends metadata only.
 - **Frappe loggers drop INFO by default**; `flow.laya` sets its own level explicitly.
 - **Site config switches**: `flow_laya_enabled`, `flow_laya_threshold`, `flow_laya_model_path`, `flow_laya_backend`, `flow_laya_cache_dir`, `flow_hf_token`,
-  `flow_webllm_strict_json` (default on), `flow_webllm_compact_context` (default on),
+  `flow_webllm_strict_json` (default on), `flow_webllm_compact_context` (default on), `flow_scope_check` (default on), `flow_web_search_domains`,
   `flow_opik_enabled`, `flow_opik_project`, `flow_opik_url`, `flow_opik_api_key`, `flow_opik_workspace`, `flow_opik_capture_content`.
 
 ## Rules for changes

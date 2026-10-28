@@ -108,11 +108,18 @@ def recover_session(session: str) -> dict[str, int]:
 
 	abandoned = frappe.get_all("Flow Run", filters={"session": doc.name, "status": "Running"}, pluck="name")
 	for name in abandoned:
-		frappe.db.set_value(
-			"Flow Run",
-			name,
-			{"status": "Failed", "error": "Run abandoned: stream ended without completing."},
-		)
+		# The run's own stream may be writing the same row as it unwinds; a deadlock there means
+		# it is finishing, so one retry (then leave it) is enough.
+		for attempt in (1, 2):
+			try:
+				frappe.db.set_value(
+					"Flow Run",
+					name,
+					{"status": "Failed", "error": "Run abandoned: stream ended without completing."},
+				)
+				break
+			except frappe.QueryDeadlockError:
+				frappe.db.rollback()
 	return {"recovered": len(abandoned)}
 
 

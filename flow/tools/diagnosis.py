@@ -34,6 +34,11 @@ SKIPPED_DIRS = frozenset(
 )
 MAX_SOURCE_MATCHES = 2
 MIN_FRAGMENT = 12
+# Site scripts and print formats are searched on fragments only this long: a label such as "Delivery
+# Date" is in many print formats and says nothing about where an error is raised.
+MIN_SITE_FRAGMENT = 24
+# This file quotes example messages in its docstrings, so a search of the app code would find it.
+THIS_FILE = os.path.abspath(__file__)
 # A pasted message may carry the user's own words around it ("getting this error <message> how
 # to solve"): up to this many words are dropped from either end to find the message itself.
 MAX_TRIMMED_WORDS = 4
@@ -221,6 +226,15 @@ def error_diagnosis(
 	help_text = None
 	if not (causes or sources or frames or logs or site_code or failures):
 		help_text = _docs_help(message, exception)
+	if not (causes or sources or frames or logs or site_code or failures or help_text):
+		# Nothing on this site or in the docs explains it, so the text may not be an error report at
+		# all (Laya also sends "I don't understand anything" here); no answer, so the chat model replies.
+		return {
+			"message": message,
+			"answer_hint": "Nothing on this site or in the documentation explains this text. If it is not an "
+			"error report, answer what the user asked, or say you can only help with this site and Frappe / "
+			"ERPNext. If it is an error, ask what they were doing when it appeared (which page, which button).",
+		}
 	return {"answer": _format(message, exception, sources, logs, causes[:2], site_code, failures, frames, help_text)}
 
 
@@ -271,10 +285,14 @@ def _docs_help(message: str, exception: str) -> str | None:
 		return None
 	from flow.tools.web import docs_howto
 
+	from flow.tools.web import OUT_OF_SCOPE
+
 	try:
-		return docs_howto.func(topic=words).get("answer")
+		answer = docs_howto.func(topic=words).get("answer")
 	except Exception:
 		return None
+	# "Not about ERPNext" is no help with an error, only a sign the text is not one.
+	return None if answer == OUT_OF_SCOPE else answer
 
 
 def _clean(error: str) -> tuple[str, str]:
@@ -415,6 +433,7 @@ def _source_files() -> tuple[str, ...]:
 				os.path.join(dirpath, name)
 				for name in filenames
 				if name.endswith(SOURCE_EXTENSIONS)
+				and os.path.join(dirpath, name) != THIS_FILE
 				and not name.endswith((".min.js", ".bundle.js"))
 				and not name.startswith("test_")
 			]
@@ -446,7 +465,7 @@ def _find_in_site_code(message: str) -> list[dict[str, str]]:
 	the message: an error raised from there is in no app's code."""
 	if not _can_read_source():
 		return []
-	needles = _search_needles(message)
+	needles = [n for n in _search_needles(message) if len(n) >= MIN_SITE_FRAGMENT or n == message.strip(" .")]
 	found: list[dict[str, str]] = []
 	for doctype, fields in SITE_CODE:
 		if not frappe.db.exists("DocType", doctype) or not frappe.has_permission(doctype, "read"):
@@ -506,14 +525,6 @@ def _recent_error_logs(message: str, exception: str) -> list[dict[str, Any]]:
 		order_by="creation desc",
 		limit=MAX_ERROR_LOGS,
 	)
-	if not logs and exception:
-		logs = frappe.get_list(
-			"Error Log",
-			filters=[["error", "like", f"%{exception}%"]],
-			fields=["name", "method", "creation", "error", "reference_doctype", "reference_name"],
-			order_by="creation desc",
-			limit=MAX_ERROR_LOGS,
-		)
 	return logs
 
 
