@@ -917,9 +917,9 @@ class TestBrowserModelContext(UnitTestCase):
 
 		# A how-to with no dedicated tool (deleting, renaming...) goes to the docs, not to a
 		# tool that explains what comes after a document.
-		with_docs = self._schemas("document_flow", "explain_doctype", "frappe_docs", "web_search")
+		with_docs = self._schemas("document_flow", "explain_doctype", "docs_howto", "frappe_docs", "web_search")
 		names = [t["function"]["name"] for t in _relevant_tools([{"role": "user", "content": "how to delete the user"}], with_docs)]
-		self.assertEqual(names, ["frappe_docs", "web_search"])
+		self.assertEqual(names, ["docs_howto", "frappe_docs", "web_search"])
 		self.assertEqual(pick("how to assign roles to users"), ["assignment_steps", "explain_doctype"])
 		self.assertEqual(pick("how do I mark this invoice as paid"), ["status_steps", "document_flow"])
 		self.assertEqual(pick("what permissions does Sales User have"), ["role_permissions", "explain_doctype"])

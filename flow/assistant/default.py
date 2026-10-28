@@ -35,7 +35,6 @@ DEFAULT_AGENT_TOOLS = (
 	"assignment_steps",
 	"status_steps",
 	"role_permissions",
-	"frappe_docs",
 	"docs_howto",
 	"web_search",
 )
@@ -48,7 +47,7 @@ RULES
 4. "What is X" -> explain_doctype. "What happens after X" -> document_flow. What a role can do -> role_permissions. Who can create/read/edit X, which users have access to X -> doctype_access. Which users have a role -> role_users. What roles a user (or "I") has -> user_roles. Errors -> error_diagnosis.
 5. To create or change a record the user asked for, call create / update with the values they gave (call describe first if you need field names); if values are missing, call required_values. The user approves before anything is saved.
 6. If a tool returns an error, fix that exact problem or tell the user briefly.
-7. If no other tool can answer (a general "how does X work" or "how do I ..." about ERPNext / Frappe), call frappe_docs and answer from the page it returns, with its link. Only if it finds nothing, call web_search and list the source links.
+7. If no other tool can answer (a general "how does X work" or "how do I ..." about ERPNext / Frappe), call docs_howto with the search words; its answer (the docs text with its link) is shown to the user as written. Only if it finds nothing, call web_search and list the source links.
 
 Reply in short, plain sentences."""
 
