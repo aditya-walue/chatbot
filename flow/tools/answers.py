@@ -1092,16 +1092,15 @@ def role_permissions(
 	if not frappe.has_permission("Role", "read"):
 		raise PermissionError("No permission to read roles")
 	if not frappe.db.exists("Role", role):
-		# A DocType or placeholder here means the question is about something else; an error lets
-		# the model pick the right tool instead of showing a confident wrong answer.
-		if not re.search(r"[A-Za-z0-9]", role or "") or frappe.db.exists("DocType", role):
-			raise ValueError(
-				f"{role!r} is not a role. For which roles can do something on a DocType use doctype_access; "
-				"for the users holding a role use role_users; for a user's own roles use user_roles."
-			)
-		matches = frappe.get_all("Role", filters={"name": ["like", f"%{role}%"]}, pluck="name", limit=5)
-		hint = f" Did you mean: {', '.join(matches)}?" if matches else ""
-		return {"answer": f"There is no role named **{role}**.{hint}"}
+		# A DocType, a verb ("can create") or a pronoun ("me") here means the question is about
+		# something else; an error lets the model pick the right tool instead of showing a
+		# confident wrong answer.
+		matches = frappe.get_all("Role", filters={"name": ["like", f"%{role}%"]}, pluck="name", limit=5) if re.search(r"[A-Za-z0-9]", role or "") else []
+		hint = f" Close role names: {', '.join(matches)}." if matches else ""
+		raise ValueError(
+			f"{role!r} is not a role.{hint} For which roles can do something on a DocType use doctype_access; "
+			"for the users holding a role use role_users; for a user's own roles use user_roles."
+		)
 	rights = [
 		f for f in frappe.get_meta("DocPerm").fields
 		if f.fieldtype == "Check" and f.fieldname not in ("if_owner",) and f.label
