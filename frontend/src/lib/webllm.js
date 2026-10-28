@@ -98,6 +98,8 @@ export async function getEngine(model, contextWindow = DEFAULT_CONTEXT_WINDOW, o
 	if (engine && engineKey === key) return engine;
 	if (engineInitPromise && engineKey === key) return engineInitPromise;
 
+	// Shown at once: the first question waits on the model's download and start-up.
+	if (onStatus) onStatus(__("Model is loading, please wait…"));
 	await verifyWebGPU();
 
 	engineKey = key;
@@ -112,7 +114,7 @@ export async function getEngine(model, contextWindow = DEFAULT_CONTEXT_WINDOW, o
 		const initProgressCallback = (p) => {
 			if (onStatus) {
 				const pct = Math.round((p.progress || 0) * 100);
-				onStatus(__("Loading {0}: {1}%", [model, pct]), p);
+				onStatus(__("Model is loading, please wait… {0}%", [pct]), p);
 			}
 		};
 		const chatOpts = { context_window_size: contextWindow };
