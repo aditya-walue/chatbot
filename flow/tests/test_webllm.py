@@ -264,3 +264,22 @@ class TestPreloadHint(IntegrationTestCase):
 
 		self.assertIn("preload", small_talk.func(kind="greeting"))
 		self.assertNotIn("preload", small_talk.func(kind="thanks"))
+
+
+class TestHiddenChoice(IntegrationTestCase):
+	def test_the_chosen_word_comes_from_the_json_verdict_or_the_bare_word(self):
+		from flow.lib.webllm import _chosen, _choice_schema
+
+		self.assertEqual(_chosen('{"verdict": "OUT"}', ["IN", "OUT"]), "OUT")
+		self.assertEqual(_chosen("IN", ["IN", "OUT"]), "IN")
+		self.assertEqual(_chosen("Amsterdam", ["IN", "OUT"]), "")
+		self.assertEqual(_choice_schema(["IN", "OUT"])["properties"]["verdict"]["enum"], ["IN", "OUT"])
+
+	def test_a_choice_call_is_a_silent_request_limited_to_the_choices(self):
+		from flow.lib.webllm import chat_stream
+
+		request = next(chat_stream("webllm/some-model", [{"role": "user", "content": "hi"}], None, {}, ["IN", "OUT"]))
+		self.assertTrue(request.silent)
+		self.assertEqual(json.loads(request.response_schema)["properties"]["verdict"]["enum"], ["IN", "OUT"])
+		plain = next(chat_stream("webllm/some-model", [{"role": "user", "content": "hi"}], None, {}))
+		self.assertFalse(plain.silent)

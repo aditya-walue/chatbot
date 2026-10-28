@@ -1,6 +1,8 @@
 # Copyright (c) 2026, Frappe Technologies and contributors
 # License: MIT. See LICENSE
 
+import os
+
 import frappe
 from frappe.tests import IntegrationTestCase
 
@@ -95,7 +97,7 @@ class TestErrorDiagnosis(IntegrationTestCase):
 		with patch("flow.tools.diagnosis._docs_help", return_value=None):
 			result = error_diagnosis(error="Zzq flux capacitor overheated near the gizmo")
 		self.assertNotIn("answer", result)
-		self.assertIn("not an error report", result["answer_hint"])
+		self.assertIn("what you were doing", result["answer_hint"])
 
 	def test_a_message_nothing_on_the_site_explains_goes_to_the_docs(self):
 		with patch("flow.tools.diagnosis._docs_help", return_value="Docs say: restart the flux.") as docs:
@@ -180,12 +182,33 @@ class TestDiagnosisNoise(IntegrationTestCase):
 			self.assertEqual(diagnosis._recent_error_logs("some message that is in no log", "ValidationError"), [])
 		self.assertEqual(get_list.call_count, 1)
 
-	def test_the_out_of_scope_reply_is_not_taken_as_help_with_an_error(self):
+	def test_the_nothing_in_the_docs_reply_is_not_taken_as_help_with_an_error(self):
 		from unittest.mock import patch
 
 		from flow.tools import diagnosis
-		from flow.tools.web import OUT_OF_SCOPE
+		from flow.tools.web import NOT_IN_DOCS
 
 		with patch("flow.tools.web.docs_howto") as docs:
-			docs.func.return_value = {"answer": OUT_OF_SCOPE}
+			docs.func.return_value = {"answer": NOT_IN_DOCS}
 			self.assertIsNone(diagnosis._docs_help("i dont understand anything at all", ""))
+
+	def test_a_label_or_report_column_is_not_where_an_error_is_raised(self):
+		import tempfile
+		from unittest.mock import patch
+
+		from flow.tools import diagnosis
+
+		with tempfile.TemporaryDirectory() as folder:
+			label = os.path.join(folder, "report.py")
+			raiser = os.path.join(folder, "checks.py")
+			with open(label, "w") as f:
+				f.write('columns = [{"label": _("Probe Quantity Is Too Low"), "fieldname": "q"}]\n')
+			with open(raiser, "w") as f:
+				f.write('frappe.throw(_("Probe Quantity Is Too Low"))\n')
+			with (
+				patch.object(diagnosis, "_source_files", return_value=(label, raiser)),
+				patch.object(diagnosis, "_hit", side_effect=lambda path, lines, i: {"file": path, "line": i + 1, "line_text": lines[i]}),
+			):
+				hits = diagnosis._search("Probe Quantity Is Too Low")
+		self.assertEqual([os.path.basename(h["file"]) for h in hits], ["checks.py"])
+

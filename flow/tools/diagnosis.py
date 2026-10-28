@@ -70,6 +70,12 @@ VALUE_START = re.compile(r"[\"']|:\s|\[|#|\d|<")
 # Lines that raise or show a message rank above a mere mention of the text.
 RAISE_MARKERS = ("throw", "msgprint", "raise", "_(", "__(", "show_alert", "ValidationError")
 
+# A line that defines a label or a field ("label": _("Delivery Date"), a report column) holds the
+# text but never raises it: it says nothing about where an error comes from.
+DEFINITION_MARKERS = ('"label"', "'label'", "label:", "label=", '"fieldname"', "'fieldname'", "fieldtype", "columns")
+# An old-style report column: _("Item") + ":Link/Item:120", "Qty:Float:80".
+COLUMN_SPEC = re.compile(r"""[\w"']:(?:Link|Data|Date|Datetime|Float|Int|Currency|Percent|Check|Select|Time|Text)(?=[/:"'\d,])""")
+
 # Pasted errors often carry the dialog's chrome; drop it before searching.
 CHROME_PREFIXES = re.compile(
 	r"^\s*(message|error|warning|alert|not permitted|validation error|traceback[^\n]*)\s*[:\n]\s*",
@@ -229,11 +235,11 @@ def error_diagnosis(
 	if not (causes or sources or frames or logs or site_code or failures or help_text):
 		# Nothing on this site or in the docs explains it, so the text may not be an error report at
 		# all (Laya also sends "I don't understand anything" here); no answer, so the chat model replies.
+		# The model often repeats this sentence to the user, so it reads as something to say.
 		return {
 			"message": message,
-			"answer_hint": "Nothing on this site or in the documentation explains this text. If it is not an "
-			"error report, answer what the user asked, or say you can only help with this site and Frappe / "
-			"ERPNext. If it is an error, ask what they were doing when it appeared (which page, which button).",
+			"answer_hint": "I couldn't find an explanation for this on your site or in the documentation. "
+			"Tell me what you were doing when it appeared (which page, which button).",
 		}
 	return {"answer": _format(message, exception, sources, logs, causes[:2], site_code, failures, frames, help_text)}
 
@@ -285,14 +291,14 @@ def _docs_help(message: str, exception: str) -> str | None:
 		return None
 	from flow.tools.web import docs_howto
 
-	from flow.tools.web import OUT_OF_SCOPE
+	from flow.tools.web import NOT_IN_DOCS
 
 	try:
 		answer = docs_howto.func(topic=words).get("answer")
 	except Exception:
 		return None
-	# "Not about ERPNext" is no help with an error, only a sign the text is not one.
-	return None if answer == OUT_OF_SCOPE else answer
+	# "Nothing in the docs" is no help with an error.
+	return None if answer == NOT_IN_DOCS else answer
 
 
 def _clean(error: str) -> tuple[str, str]:
@@ -400,6 +406,8 @@ def _search(needle: str, translated_only: bool = False) -> list[dict[str, Any]]:
 		lines = text.splitlines()
 		for i, line in enumerate(lines):
 			if len(line) > MAX_LINE or lowered not in line.lower():
+				continue
+			if any(marker in line for marker in DEFINITION_MARKERS) or COLUMN_SPEC.search(line):
 				continue
 			if translated_only and not re.search(r"__?\(\s*[\"']" + re.escape(needle[:6]), line, re.IGNORECASE):
 				continue

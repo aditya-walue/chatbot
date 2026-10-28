@@ -40,11 +40,16 @@ QUERY_LIMIT = 200
 # `flow_web_search_domains` ("host" or "host/path" strings). Anything else is not about Frappe.
 DEFAULT_WEB_SOURCES = ("frappe.io", "frappe.school", "frappecloud.com", "erpnext.com", "github.com/frappe")
 RAW_RESULTS_LIMIT = 20  # read from the search, before the sources filter
-# Said when neither the docs nor the Frappe / ERPNext sources have anything on the question: it is
-# not about this site or ERPNext, and the chat model must not improvise an answer.
+# Said by the scope check when a message is not about this site or ERPNext / Frappe at all.
 OUT_OF_SCOPE = (
 	"I can only help with questions about this site and ERPNext / Frappe. "
 	"Ask me about your records, roles, or how to do something in ERPNext."
+)
+# Said when the docs and the Frappe / ERPNext sources have nothing on a question: it may well be an
+# ERP question, so it is not called off-topic, and the chat model must not improvise an answer.
+NOT_IN_DOCS = (
+	"I couldn't find this in the Frappe documentation. Try asking in different words, "
+	"or ask about your records, roles or settings."
 )
 
 
@@ -65,7 +70,7 @@ def web_search(
 		return {
 			"query": query,
 			"results": [],
-			"answer_hint": f"Nothing found in Frappe / ERPNext sources. Reply with exactly this and nothing else: {OUT_OF_SCOPE}",
+			"answer_hint": f"Nothing found in Frappe / ERPNext sources. Reply with exactly this and nothing else: {NOT_IN_DOCS}",
 		}
 	return {"query": query, "results": results, "source": "DuckDuckGo"}
 
@@ -274,25 +279,24 @@ def docs_howto(
 	if len(text) > ANSWER_LIMIT:
 		cut = text[:ANSWER_LIMIT]
 		text = cut[: cut.rfind("\n\n")] if "\n\n" in cut else cut
-	title = page.get("title") or "page"
-	lines = [f"This is what the Frappe documentation says ({title}{f': {heading}' if heading else ''}):", "", text.strip(), "", f"Source: {page['url']}"]
+	lines = [text.strip(), "", f"Source: {page['url']}"]
 	more = [{"title": p["title"], "url": p["url"]} for p in found["more"]]
 	if more:
 		lines += ["", "Related pages:"] + [f"- [{m['title']}]({m['url']})" for m in more]
-	return {"query": topic, "page": {"title": title, "url": page["url"]}, "more": more, "answer": "\n".join(lines)}
+	return {"query": topic, "page": {"title": page.get("title") or "page", "url": page["url"]}, "more": more, "answer": "\n".join(lines)}
 
 
 def _web_fallback(topic: str) -> dict[str, Any]:
 	"""The docs have nothing on `topic`: the Frappe / ERPNext web results as they are (title, link,
-	snippet), no model in between. When the search works and finds nothing, the question is not
-	about Frappe or ERPNext and the answer says so; when the search itself fails there is no answer,
+	snippet), no model in between. When the search works and finds nothing, the answer says the docs
+	have nothing on it; when the search itself fails there is no answer,
 	so the chat model takes over."""
 	try:
 		results = _scoped_search(" ".join(str(topic or "").split())[:QUERY_LIMIT])
 	except Exception:
 		return {"query": topic, "page": None, "more": [], "answer_hint": "The Frappe documentation and web search can't be reached right now."}
 	if not results:
-		return {"query": topic, "page": None, "more": [], "answer": OUT_OF_SCOPE}
+		return {"query": topic, "page": None, "more": [], "answer": NOT_IN_DOCS}
 	lines = ["I couldn't find this in the Frappe documentation. These web results may help:", ""]
 	lines += [f"- [{r['title']}]({r['url']})" + (f" — {r['snippet']}" if r.get("snippet") else "") for r in results]
 	return {"query": topic, "page": None, "results": results, "source": "DuckDuckGo", "answer": "\n".join(lines)}
@@ -333,7 +337,7 @@ def _docs_search(query: str) -> list[dict[str, str]]:
 			}
 		)
 	pages.sort(key=lambda p: p.pop("rank"))
-	return _current_only(pages)
+	return _current_only(_installed_only(pages, installed))
 
 
 PREFERRED_DOCTYPES = 20
@@ -375,6 +379,13 @@ def _app_words(app: str) -> set[str]:
 def _app_order(section: str, preferred: list[set[str]]) -> int:
 	"""Position of the docs section's app among the apps the site uses for the topic."""
 	return next((i for i, words in enumerate(preferred) if section in words), len(preferred))
+
+
+def _installed_only(pages: list[dict[str, str]], installed: set[str]) -> list[dict[str, str]]:
+	"""Only pages of products installed on this site: the docs also cover Frappe Books, Frappe Cloud
+	and others, whose pages answer a different product's question ("double entry" -> Books journal
+	entries). Without any page of an installed product there is no docs answer."""
+	return [p for p in pages if urlparse(p["url"]).path.strip("/").split("/")[0].lower() in installed]
 
 
 def _is_versioned(url: str) -> bool:

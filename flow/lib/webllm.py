@@ -60,6 +60,9 @@ class BrowserRequest:
 	messages: list[dict[str, str]]
 	params: dict[str, Any] = field(default_factory=dict)
 	response_schema: str | None = None
+	# A call made for the server's own use (a yes / no question): the panel runs it but does not
+	# show the model's text, which would otherwise appear in the chat before the real answer.
+	silent: bool = False
 
 
 @dataclass
@@ -132,9 +135,12 @@ def chat_stream(
 	messages: list[dict[str, Any]],
 	tools: list[dict[str, Any]] | None,
 	params: dict[str, Any] | None,
+	choices: list[str] | None = None,
 ) -> Generator[BrowserRequest | Heartbeat, None, ChatResponse]:
 	"""Hand one model call to the browser and wait for its reply. Same contract as
-	`Model.chat(stream=True)`: yields stream items, returns the ChatResponse."""
+	`Model.chat(stream=True)`: yields stream items, returns the ChatResponse. With `choices`, the
+	call is a hidden classification: the browser must answer with one of them (enforced while
+	decoding), and the ChatResponse content is that word."""
 	request_id = frappe.generate_hash(length=20)
 	frappe.cache.set_value(
 		_owner_key(request_id), frappe.session.user, expires_in_sec=REPLY_TIMEOUT + 60
@@ -143,15 +149,36 @@ def chat_stream(
 	yield BrowserRequest(
 		id=request_id,
 		model=model_id.split("/", 1)[1],
-		messages=to_plain_messages(messages, tools, strict=strict),
+		messages=to_plain_messages(messages, tools, strict=strict and not choices),
 		params=params or {},
-		response_schema=json.dumps(response_schema(tools)) if strict else None,
+		response_schema=json.dumps(_choice_schema(choices)) if choices else (json.dumps(response_schema(tools)) if strict else None),
+		silent=bool(choices),
 	)
 
 	reply = yield from _wait_for_reply(request_id)
 	if reply.get("error"):
 		raise RuntimeError(reply["error"])
+	if choices:
+		return ChatResponse(content=_chosen(reply.get("content") or "", choices), usage=reply.get("usage") or {})
 	return parse_reply(reply.get("content") or "", reply.get("usage") or {})
+
+
+def _choice_schema(choices: list[str]) -> dict[str, Any]:
+	return {
+		"type": "object",
+		"properties": {"verdict": {"type": "string", "enum": choices}},
+		"required": ["verdict"],
+		"additionalProperties": False,
+	}
+
+
+def _chosen(content: str, choices: list[str]) -> str:
+	"""The word the browser chose from `choices`, or "" when its reply is none of them."""
+	try:
+		word = str(json.loads(content).get("verdict", ""))
+	except (ValueError, AttributeError):
+		word = content.strip().strip('"{}')
+	return word if word in choices else ""
 
 
 def submit_reply(request_id: str, reply: dict[str, Any]) -> bool:

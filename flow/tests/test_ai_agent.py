@@ -28,7 +28,7 @@ class FakeModel:
 		self._streams = list(streams) if streams is not None else [[r.content or ""] for r in responses]
 		self.calls: list[dict[str, Any]] = []
 
-	def chat(self, messages, tools=None, *, stream=False):
+	def chat(self, messages, tools=None, *, stream=False, choices=None):
 		self.calls.append({"messages": list(messages), "tools": tools, "stream": stream})
 		if not self._responses:
 			raise AssertionError("FakeModel ran out of scripted responses")

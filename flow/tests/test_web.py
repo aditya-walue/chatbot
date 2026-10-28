@@ -52,7 +52,7 @@ class TestWebSearch(IntegrationTestCase):
 		with patch("requests.post", return_value=MagicMock(text=forum, raise_for_status=lambda: None)):
 			empty = web_search.func(query="what is the weather today")
 		self.assertEqual(empty["results"], [])
-		self.assertIn("only", empty["answer_hint"])
+		self.assertIn("Nothing found", empty["answer_hint"])
 
 	def test_a_site_can_set_its_own_sources(self):
 		from flow.tools.web import _is_web_source
@@ -108,8 +108,8 @@ class TestFrappeDocs(IntegrationTestCase):
 		self.assertEqual(result["page"]["title"], "Role Based Permissions")
 		self.assertEqual(result["page"]["text"], "Permissions are set on **roles**.")
 		self.assertEqual(get.call_args_list[-1].args[0], "https://docs.frappe.io/erpnext/role-based-permissions.md")
-		# Other products' pages follow; the old versioned page is left out.
-		self.assertEqual([m["url"].split(".io/")[1] for m in result["more"]], ["cloud/role-permissions"])
+		# Pages of products this site does not run (cloud) and the old versioned page are left out.
+		self.assertEqual(result["more"], [])
 
 	def test_old_versioned_pages_are_kept_only_when_nothing_current_exists(self):
 		from flow.tools.web import _current_only
@@ -118,6 +118,15 @@ class TestFrappeDocs(IntegrationTestCase):
 		new = {"title": "New", "url": "https://docs.frappe.io/erpnext/roles", "snippet": ""}
 		self.assertEqual(_current_only([old, new]), [new])
 		self.assertEqual(_current_only([old]), [old])
+
+
+class TestInstalledOnly(IntegrationTestCase):
+	def test_pages_of_products_the_site_does_not_run_are_dropped(self):
+		from flow.tools.web import _installed_only
+
+		pages = [{"url": "https://docs.frappe.io/books/journal-entries"}, {"url": "https://docs.frappe.io/erpnext/journal-entry"}]
+		self.assertEqual(_installed_only(pages, {"erpnext"}), [pages[1]])
+		self.assertEqual(_installed_only(pages[:1], {"erpnext"}), [])
 
 
 class TestPreferredApps(IntegrationTestCase):
@@ -238,7 +247,8 @@ class TestDocsHowto(IntegrationTestCase):
 
 			result = docs_howto.func(topic="how to convert a widget to a gadget")
 		answer = result["answer"]
-		self.assertIn("(Widgets: Converting a widget to a gadget)", answer)
+		self.assertNotIn("documentation says", answer)  # the answer starts with the docs text itself
+		self.assertTrue(answer.startswith("Press **Convert**."))
 		self.assertIn("Press **Convert**.", answer)
 		self.assertIn("Source: https://docs.frappe.io/app/widgets", answer)
 		self.assertNotIn("Open the form and save.", answer)
@@ -282,14 +292,14 @@ class TestDocsHowto(IntegrationTestCase):
 		self.assertIn("web results may help", result["answer"])
 		self.assertNotIn("Frappe documentation says", result["answer"])
 
-	def test_nothing_in_the_docs_or_on_the_web_says_to_ask_about_erp(self):
-		from flow.tools.web import OUT_OF_SCOPE, docs_howto
+	def test_nothing_in_the_docs_or_on_the_web_says_so(self):
+		from flow.tools.web import NOT_IN_DOCS, docs_howto
 
 		with patch("requests.get", side_effect=self._empty), patch("flow.tools.web._installed_app_words", return_value=set()), patch(
 			"flow.tools.web._duckduckgo", return_value=[]
 		):
 			result = docs_howto.func(topic="good morning in hindi")
-		self.assertEqual(result["answer"], OUT_OF_SCOPE)
+		self.assertEqual(result["answer"], NOT_IN_DOCS)
 
 	def test_a_web_search_that_errors_leaves_it_to_the_chat_model(self):
 		from flow.tools.web import docs_howto

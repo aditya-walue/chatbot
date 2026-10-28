@@ -84,9 +84,11 @@ class Model:
 		tools: list[dict[str, Any]] | None = None,
 		*,
 		stream: bool = False,
+		choices: list[str] | None = None,
 	) -> ChatResponse | Generator[str, None, ChatResponse]:
 		"""Call the model. When `stream=True`, returns a generator that yields text deltas
-		and returns the assembled `ChatResponse` via PEP 380 (`StopIteration.value`)."""
+		and returns the assembled `ChatResponse` via PEP 380 (`StopIteration.value`). `choices`
+		makes it a hidden one-word classification (browser models only)."""
 		if isinstance(messages, str):
 			messages = [{"role": "user", "content": messages}]
 
@@ -97,7 +99,7 @@ class Model:
 				raise ValueError(
 					f"{self.model_id!r} runs in the user's browser, so it can only be used from the chat panel."
 				)
-			return chat_stream(self.model_id, messages, tools, self.params)
+			return chat_stream(self.model_id, messages, tools, self.params, choices)
 
 		import litellm
 

@@ -111,10 +111,13 @@ export async function getEngine(model, contextWindow = DEFAULT_CONTEXT_WINDOW, o
 			throw new Error(__("Failed to load WebLLM from CDN: {0}", [e.message || String(e)]));
 		}
 
+		// WebLLM reports progress per phase (fetching, caching, compiling), so the raw value jumps
+		// back down between phases; show the furthest point reached instead.
+		let furthest = 0;
 		const initProgressCallback = (p) => {
 			if (onStatus) {
-				const pct = Math.round((p.progress || 0) * 100);
-				onStatus(__("Model is loading, please wait… {0}%", [pct]), p);
+				furthest = Math.max(furthest, Math.round((p.progress || 0) * 100));
+				onStatus(__("Model is loading, please wait… {0}% (the first time takes a few minutes)", [furthest]), p);
 			}
 		};
 		const chatOpts = { context_window_size: contextWindow };

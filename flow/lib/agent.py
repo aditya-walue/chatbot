@@ -556,12 +556,20 @@ class Agent:
 		return _recent_turns(messages), _relevant_tools(messages, tool_schemas)
 
 	def _stream_model(
-		self, messages: list[dict[str, Any]], tool_schemas: list[dict[str, Any]] | None
+		self,
+		messages: list[dict[str, Any]],
+		tool_schemas: list[dict[str, Any]] | None,
+		choices: list[str] | None = None,
 	) -> Generator[Event, None, ChatResponse]:
-		"""One streamed model call, relaying its events; returns the assembled response."""
+		"""One streamed model call, relaying its events; returns the assembled response. With
+		`choices` it is a hidden classification the model answers with one of those words."""
 		started = tracing.now()
 		try:
-			chunks = self.model.chat(messages, tools=tool_schemas, stream=True)
+			chunks = (
+				self.model.chat(messages, tools=tool_schemas, stream=True, choices=choices)
+				if choices
+				else self.model.chat(messages, tools=tool_schemas, stream=True)
+			)
 		except Exception as e:
 			self._trace_model(messages, tool_schemas, None, started, error=e)
 			raise
@@ -602,7 +610,7 @@ class Agent:
 			{"role": "system", "content": SCOPE_CHECK},
 			{"role": "user", "content": f"{earlier}Latest message: {users[-1][:400]}"},
 		]
-		call = self._stream_model(check, None)
+		call = self._stream_model(check, None, ["IN", "OUT"])
 		try:
 			while True:
 				event = next(call)
@@ -859,7 +867,7 @@ def _recent_turns(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # The one question the browser model is asked before it answers a message no route took.
 SCOPE_CHECK = (
 	"You filter messages for an assistant that helps with a company's ERPNext / Frappe site. "
-	"Reply with one word. IN: the message is about the site, its records, users, roles, settings, "
+	"Answer IN or OUT. IN: the message is about the site, its records, users, roles, settings, "
 	"reports or errors, or about how to do something in ERPNext / Frappe, or is a greeting, thanks, "
 	"or a short follow-up to the earlier message. OUT: anything else, such as a poem, a joke, general "
 	"knowledge, maths, coding or career advice, weather, news or a translation."
@@ -979,7 +987,7 @@ def _research_answer(messages: list[dict[str, Any]]) -> str | None:
 		page = result.get("page")
 		if isinstance(page, dict) and page.get("url") and (page.get("text") or page.get("snippet")):
 			text = str(page.get("text") or page["snippet"])[:RESEARCH_TEXT_LIMIT].rstrip()
-			return f"This is what the Frappe documentation says ({page.get('title') or 'page'}):\n\n{text}\n\nSource: {page['url']}"
+			return f"{text}\n\nSource: {page['url']}"
 		found = [r for r in result.get("results") or [] if isinstance(r, dict) and r.get("url")]
 		if found:
 			lines = [f"- {r.get('title') or r['url']}: {r['url']}" for r in found]

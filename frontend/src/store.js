@@ -525,10 +525,13 @@ async function handleBrowserRequest(request, msg, signal) {
 	let reply;
 	try {
 		const result = await runBrowserRequest(request, {
-			onText: (delta) => {
-				appendText(msg, delta);
-				requestScroll();
-			},
+			// A silent request is the server's own yes / no question: its text is never shown.
+			onText: request.silent
+				? undefined
+				: (delta) => {
+						appendText(msg, delta);
+						requestScroll();
+				  },
 			onStatus: (status) => {
 				msg.status = status;
 				modelLoadingStatus.value = status;
