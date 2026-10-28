@@ -60,8 +60,8 @@ function sendOther() {
 </script>
 
 <template>
-	<div class="flow-card p-3" :class="{ 'opacity-70': answered, 'is-danger': danger }">
-		<div class="flex items-center gap-2.5">
+	<div class="flow-card p-4" :class="{ 'opacity-70': answered, 'is-danger': danger }">
+		<div class="flex items-center gap-3">
 			<span class="flow-tile">
 				<FeatherIcon :name="danger ? 'alert-triangle' : 'shield'" class="h-3.5 w-3.5" />
 			</span>
@@ -70,21 +70,21 @@ function sendOther() {
 			</div>
 		</div>
 
-		<div v-if="showArgs" class="mt-2.5">
+		<div v-if="showArgs" class="mt-3">
 			<ArgsView :arguments="displayArgs" :block-keys="blockKeys" />
 		</div>
 		<pre v-else-if="body" class="flow-confirm-body">{{ body }}</pre>
 
 		<div
 			v-if="answered"
-			class="mt-2 flex items-center justify-end gap-1.5 text-xs text-ink-gray-6"
+			class="mt-2 flex items-center justify-end gap-2 text-xs text-ink-gray-6"
 		>
 			<FeatherIcon name="check" class="h-3 w-3" />
 			<span class="truncate">{{ optLabel(question._answer) }}</span>
 		</div>
 
 		<template v-else>
-			<div v-if="!question._showOther" class="mt-2.5 flex flex-wrap justify-end gap-1.5">
+			<div v-if="!question._showOther" class="mt-3 flex flex-wrap justify-end gap-2">
 				<Button
 					v-for="opt in question.options"
 					:key="opt"
@@ -102,17 +102,17 @@ function sendOther() {
 				/>
 			</div>
 
-			<div v-else class="mt-2.5">
+			<div v-else class="mt-3">
 				<textarea
 					ref="otherEl"
 					v-model="question._otherText"
 					rows="2"
-					class="flow-textarea w-full resize-none rounded-md border border-outline-gray-2 bg-surface-white px-2.5 py-2 text-sm text-ink-gray-9 outline-none focus:border-outline-gray-3"
+					class="flow-textarea w-full resize-none rounded-[10px] border border-outline-gray-2 bg-surface-white px-3 py-2 text-sm text-ink-gray-9 outline-none focus:border-outline-gray-3"
 					:placeholder="__('Describe what you want instead…')"
 					@keydown.enter.exact.prevent="sendOther"
 					@keydown.esc="cancelOther"
 				></textarea>
-				<div class="mt-1.5 flex justify-end gap-1.5">
+				<div class="mt-2 flex justify-end gap-2">
 					<Button variant="ghost" :label="__('Cancel')" @click="cancelOther" />
 					<Button
 						variant="solid"

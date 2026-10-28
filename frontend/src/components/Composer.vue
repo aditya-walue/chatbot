@@ -104,12 +104,8 @@ watch(focusTick, () => nextTick(() => el.value?.focus()));
 <template>
 	<div
 		class="flow-composer absolute inset-x-4 bottom-4 mx-auto flex max-w-3xl flex-col gap-1 px-3 pb-2.5 pt-2"
-		:class="{ 'flow-composer-drag': dragging }"
-		@dragover="onDragOver"
-		@dragleave="onDragLeave"
-		@drop="onDrop"
 	>
-		<div v-if="attachments.length" class="flex flex-wrap gap-1.5">
+		<div v-if="attachments.length" class="flex flex-wrap gap-2">
 			<AttachmentChip
 				v-for="a in attachments"
 				:key="a.uid"
@@ -128,30 +124,12 @@ watch(focusTick, () => nextTick(() => el.value?.focus()));
 			rows="1"
 			:placeholder="placeholder"
 			:disabled="inputDisabled"
-			class="max-h-40 min-h-[44px] w-full resize-none border-0 bg-transparent px-0.5 pt-1 text-base font-normal leading-relaxed tracking-tight text-ink-gray-9 outline-none placeholder:text-ink-gray-4"
+			class="max-h-40 min-h-[44px] w-full resize-none border-0 bg-transparent px-0.5 pt-1 text-base font-normal leading-relaxed text-ink-gray-9 outline-none placeholder:text-ink-gray-4"
 			@keydown="onKeydown"
 			@input="resize"
 		></textarea>
 
-		<div class="flex items-center gap-1.5">
-			<!-- attach -->
-			<button
-				class="flow-icon-btn"
-				:disabled="inputDisabled"
-				:title="__('Attach file')"
-				@click="pickFiles"
-			>
-				<FeatherIcon name="paperclip" class="h-4 w-4" />
-			</button>
-			<input
-				ref="fileInput"
-				type="file"
-				multiple
-				:accept="ACCEPT"
-				class="hidden"
-				@change="onFilesPicked"
-			/>
-
+		<div class="flex items-center gap-2">
 			<span class="flex-1"></span>
 
 			<button

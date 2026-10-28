@@ -18,7 +18,7 @@ defineProps({
 			/>
 		</div>
 		<div
-			class="flow-user-bubble max-w-[88%] whitespace-pre-wrap break-words px-4 py-2.5 text-[length:var(--text-base)] font-normal leading-relaxed tracking-tight text-ink-gray-9"
+			class="flow-user-bubble max-w-[88%] whitespace-pre-wrap break-words px-4 py-2.5 text-[length:var(--text-base)] font-normal leading-relaxed text-ink-gray-9"
 		>
 			{{ content }}
 		</div>

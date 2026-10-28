@@ -46,7 +46,7 @@ const tupleValues = (v) => (Array.isArray(v[1]) ? v[1] : [v[1]]).map(formatScala
 					:class="{ 'border-t border-outline-gray-1': i }"
 				>
 					<div
-						class="mb-2 pb-0 text-[11px] font-semibold uppercase leading-none tracking-wide text-ink-gray-4"
+						class="mb-2 pb-0 flow-micro-tag text-ink-gray-4"
 					>
 						{{ humanize(row.key) }}
 					</div>
@@ -76,7 +76,7 @@ const tupleValues = (v) => (Array.isArray(v[1]) ? v[1] : [v[1]]).map(formatScala
 
 		<div v-for="s in blocks" :key="s.key">
 			<div
-				class="mb-2 pb-0 text-[11px] font-semibold uppercase leading-none tracking-wide text-ink-gray-4"
+				class="mb-2 pb-0 flow-micro-tag text-ink-gray-4"
 			>
 				{{ humanize(s.key) }}
 			</div>
