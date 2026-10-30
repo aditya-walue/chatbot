@@ -65,6 +65,10 @@ class Tool:
 	route: Callable[[str], dict[str, Any] | None] | None = None
 	# Lets the optional Laya classifier send a message here (see LayaRoute).
 	laya: LayaRoute | None = None
+	# Name of an argument whose value must have been mentioned in the conversation, or be the record
+	# type of the page the user has open, when the model chose the call itself: a small model asked
+	# "what is this?" otherwise fills it with an example from the tool's description.
+	named_in_conversation: str | None = None
 
 	def __post_init__(self) -> None:
 		self._validated = validate_call(config=ConfigDict(arbitrary_types_allowed=True))(self.func)
@@ -107,6 +111,7 @@ def tool(
 	redirect: Callable[[dict[str, Any]], tuple[str, dict[str, Any]] | None] | None = None,
 	route: Callable[[str], dict[str, Any] | None] | None = None,
 	laya: LayaRoute | None = None,
+	named_in_conversation: str | None = None,
 ) -> Tool | Callable[[Callable[..., Any]], Tool]:
 	def wrap(f: Callable[..., Any]) -> Tool:
 		if not callable(f):
@@ -123,6 +128,7 @@ def tool(
 			redirect=redirect,
 			route=route,
 			laya=laya,
+			named_in_conversation=named_in_conversation,
 		)
 
 	return wrap(func) if func is not None else wrap

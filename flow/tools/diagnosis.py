@@ -1,12 +1,10 @@
 # Copyright (c) 2026, Frappe Technologies and contributors
 # License: MIT. See LICENSE
 
-"""error_diagnosis: explain an error message from facts on this site, not from memory.
+"""error_diagnosis: explain an error message from facts on this site, not from memory. The app's own
+source is never searched or shown: the people asking have no access to it.
 
 Sources, each optional:
-- the traceback's own frames in the installed apps (file, line, function), when one was pasted;
-- the code that raises the message, found by searching the installed apps' source (exact text
-  first, then its fixed parts, so templated messages like "Could not find {0}" still match);
 - scripts and templates saved on the site, recent Error Log entries and other failure logs;
 - a table of common Frappe / ERPNext error types with their usual cause and fix;
 - when none of those knows the message, the Frappe documentation, then the web (the fixed start
@@ -17,9 +15,7 @@ The result is a finished, formatted diagnosis shown to the user as-is (a final-a
 
 from __future__ import annotations
 
-import os
 import re
-from functools import lru_cache
 from typing import Annotated, Any
 from urllib.parse import quote
 
@@ -27,19 +23,15 @@ import frappe
 
 from flow.lib.tool import LayaRoute, tool
 
-SOURCE_EXTENSIONS = (".py", ".js", ".vue", ".ts")
-# Generated bundles, dependencies and tests: matches there are noise, not where an error is raised.
-SKIPPED_DIRS = frozenset(
-	{"node_modules", "dist", ".git", "__pycache__", "tests", "test", "locale", "translations", "build", "fixtures"}
-)
-MAX_SOURCE_MATCHES = 2
 MIN_FRAGMENT = 12
+MIN_FRAGMENT_WORDS = 3
+# Site scripts and print formats are searched on fragments only this long: a label such as "Delivery
+# Date" is in many print formats and says nothing about where an error is raised.
+MIN_SITE_FRAGMENT = 24
 # A pasted message may carry the user's own words around it ("getting this error <message> how
 # to solve"): up to this many words are dropped from either end to find the message itself.
 MAX_TRIMMED_WORDS = 4
 MIN_WINDOW_WORDS = 5
-# Longer lines are minified bundles, not readable source.
-MAX_LINE = 400
 MAX_ERROR_LOGS = 3
 # Code and templates kept in the site's database rather than in an app: (DocType, fields searched).
 SITE_CODE = (
@@ -56,15 +48,9 @@ FAILURE_LOGS = (
 	("Integration Request", "error", {"status": "Failed"}, "Integration Request"),
 	("Webhook Request Log", "error", {}, "Webhook Request Log"),
 )
-# A traceback frame: File "/…/apps/<app>/<path>.py", line 12, in function
-TRACE_FRAME = re.compile(r'File "([^"]+)", line (\d+), in (\S+)')
-MAX_FRAMES = 2
 MIN_HELP_WORDS = 3
 # Where a message's filled-in values begin: a quote, "Label: value", a bracket, "#1", a digit.
 VALUE_START = re.compile(r"[\"']|:\s|\[|#|\d|<")
-# Lines that raise or show a message rank above a mere mention of the text.
-RAISE_MARKERS = ("throw", "msgprint", "raise", "_(", "__(", "show_alert", "ValidationError")
-
 # Pasted errors often carry the dialog's chrome; drop it before searching.
 CHROME_PREFIXES = re.compile(
 	r"^\s*(message|error|warning|alert|not permitted|validation error|traceback[^\n]*)\s*[:\n]\s*",
@@ -199,17 +185,12 @@ def error_diagnosis(
 	error: Annotated[str, "The error message exactly as the user pasted it, including any traceback."],
 ) -> dict[str, Any]:
 	"""Diagnose any error or failure on this site, pasted or described ("why did X fail"): where it
-	is raised (app code, scripts saved on the site), recent Error Log and failed jobs, emails
+	is raised if a script saved on the site does it, recent Error Log and failed jobs, emails
 	and integration calls, the likely cause and the fix."""
 	message, exception = _clean(error)
 	if not message:
 		raise ValueError("Paste the error message to diagnose.")
 
-	frames = _traceback_frames(error) if _can_read_source() else []
-	sources = _find_in_source(message) if _can_read_source() else []
-	if not sources:
-		# A message the user sees translated: search the code for its English original.
-		sources = _find_translated_source(message)
 	site_code = _find_in_site_code(message)
 	logs = _recent_error_logs(message, exception)
 	failures = _recent_failures(message)
@@ -219,25 +200,18 @@ def error_diagnosis(
 		missing = message.rsplit("]:", 1)[-1].strip()
 		causes = [(f"Required field(s) left empty: {missing}.", "Fill in those fields, then save again.")]
 	help_text = None
-	if not (causes or sources or frames or logs or site_code or failures):
+	if not (causes or logs or site_code or failures):
 		help_text = _docs_help(message, exception)
-	return {"answer": _format(message, exception, sources, logs, causes[:2], site_code, failures, frames, help_text)}
-
-
-def _traceback_frames(text: str) -> list[dict[str, Any]]:
-	"""The innermost frames of a pasted traceback that are in an installed app (file relative to
-	the apps folder, line, function): where it was raised, read from the paste itself."""
-	installed = {app: _app_title(app) for app in frappe.get_installed_apps()}
-	frames = []
-	for path, line, function in TRACE_FRAME.findall(text or ""):
-		found = re.search(r"/apps/([^/]+)/(.+)$", path.replace(os.sep, "/"))
-		if found and found.group(1) in installed:
-			frames.append({"app": installed[found.group(1)], "file": f"{found.group(1)}/{found.group(2)}", "line": int(line), "function": function})
-	return frames[-MAX_FRAMES:][::-1]
-
-
-def _app_title(app: str) -> str:
-	return (frappe.get_hooks("app_title", app_name=app) or [app])[0]
+	if not (causes or logs or site_code or failures or help_text):
+		# Nothing on this site or in the docs explains it, so the text may not be an error report at
+		# all (Laya also sends "I don't understand anything" here); no answer, so the chat model replies.
+		# The model often repeats this sentence to the user, so it reads as something to say.
+		return {
+			"message": message,
+			"answer_hint": "I couldn't find an explanation for this on your site or in the documentation. "
+			"Tell me what you were doing when it appeared (which page, which button).",
+		}
+	return {"answer": _format(message, exception, logs, causes[:2], site_code, failures, help_text)}
 
 
 def _exception_kind(name: str) -> str:
@@ -271,10 +245,14 @@ def _docs_help(message: str, exception: str) -> str | None:
 		return None
 	from flow.tools.web import docs_howto
 
+	from flow.tools.web import NOT_IN_DOCS
+
 	try:
-		return docs_howto.func(topic=words).get("answer")
+		answer = docs_howto.func(topic=words).get("answer")
 	except Exception:
 		return None
+	# "Nothing in the docs" is no help with an error.
+	return None if answer == NOT_IN_DOCS else answer
 
 
 def _clean(error: str) -> tuple[str, str]:
@@ -297,42 +275,14 @@ def _can_read_source() -> bool:
 	) == "System User"
 
 
-def _find_in_source(message: str) -> list[dict[str, Any]]:
-	"""Where the message is raised: the exact text first, then its longest fixed parts, then
-	its leading words (a template's fixed start, "Could not find" of "Could not find {0}")."""
-	for needle, translated_only in (
-		[(n, False) for n in _needles(message)]
-		+ [(n, False) for n in _trimmed_windows(message)]
-		+ [(n, True) for n in _leading_words(message)]
-	):
-		exact = needle == message.strip(" .")
-		hits = _search(needle, translated_only)
-		if not exact:
-			hits = [h for h in hits if _fits_message(h["file"], message)]
-		if hits:
-			hits.sort(key=lambda h: not any(m in h["line_text"] for m in RAISE_MARKERS))
-			# A partial match is a guess: show only the best one.
-			return hits[: MAX_SOURCE_MATCHES if exact else 1]
-	return []
-
-
-def _fits_message(file: str, message: str) -> bool:
-	"""A partial match inside one DocType's own folder is relevant only when the message names that
-	DocType: "Mandatory fields required in Sales Order" shares its start with a Payroll Entry
-	script's message, which says nothing about where this one is raised."""
-	found = re.search(r"/doctype/([^/]+)/", file.replace(os.sep, "/"))
-	if not found:
-		return True
-	return found.group(1).replace("_", " ") in message.lower().replace("_", " ")
-
-
 def _needles(message: str) -> list[str]:
 	"""Search strings, most specific first. Values filled into a template ("Row #1", quoted
-	names, numbers) split the message into the fixed parts the source code contains."""
+	names, numbers) split the message into the fixed parts a script or log contains."""
 	parts = re.split(r"\"[^\"]*\"|'[^']*'|#\d+|\d[\d,.:-]*|<[^>]+>|:\s|\[[^\]]*\]", message)
-	# Multi-word phrases only: a lone identifier ("delivery_date") matches unrelated code.
+	# Three words or more: a lone identifier ("delivery_date") or a field label that follows the
+	# colon ("Delivery Date") is a filled-in value and matches unrelated code, such as a dialog title.
 	fragments = sorted(
-		{p.strip(" .,;") for p in parts if len(p.strip(" .,;")) >= MIN_FRAGMENT and " " in p.strip()},
+		{p.strip(" .,;") for p in parts if len(p.strip(" .,;")) >= MIN_FRAGMENT and len(p.split()) >= MIN_FRAGMENT_WORDS},
 		key=len,
 		reverse=True,
 	)
@@ -354,87 +304,6 @@ def _trimmed_windows(message: str) -> list[str]:
 	return windows
 
 
-def _leading_words(message: str) -> list[str]:
-	"""The message's first 5..3 words, for templates whose filled-in values follow a fixed start."""
-	words = re.findall(r"[A-Za-z][\w']*", message)
-	out = []
-	for n in (5, 4, 3):
-		if len(words) >= n:
-			phrase = " ".join(words[:n])
-			if len(phrase) >= MIN_FRAGMENT and phrase not in out:
-				out.append(phrase)
-	return out
-
-
-def _search(needle: str, translated_only: bool = False) -> list[dict[str, Any]]:
-	"""Files whose source contains `needle` (case-insensitive), one hit per file. With
-	`translated_only`, only user-facing strings count: lines that wrap text in _( or __(."""
-	lowered = needle.lower()
-	hits = []
-	for path in _source_files():
-		try:
-			with open(path, encoding="utf-8", errors="ignore") as f:
-				text = f.read()
-		except OSError:
-			continue
-		if lowered not in text.lower():
-			continue
-		lines = text.splitlines()
-		for i, line in enumerate(lines):
-			if len(line) > MAX_LINE or lowered not in line.lower():
-				continue
-			if translated_only and not re.search(r"__?\(\s*[\"']" + re.escape(needle[:6]), line, re.IGNORECASE):
-				continue
-			hits.append(_hit(path, lines, i))
-			break
-		if len(hits) >= 10:
-			break
-	return hits
-
-
-def _hit(path: str, lines: list[str], index: int) -> dict[str, Any]:
-	relative = os.path.relpath(path, frappe.get_app_path("frappe", "..", ".."))
-	app = relative.split(os.sep, 1)[0]
-	return {
-		"app": frappe.get_hooks("app_title", app_name=app)[0] if frappe.get_hooks("app_title", app_name=app) else app,
-		"file": relative,
-		"line": index + 1,
-		"line_text": lines[index],
-	}
-
-
-@lru_cache(maxsize=1)
-def _source_files() -> tuple[str, ...]:
-	"""Source files of the installed apps (cached for the worker's lifetime)."""
-	files = []
-	for app in frappe.get_installed_apps():
-		root = frappe.get_app_path(app)
-		for dirpath, dirnames, filenames in os.walk(root):
-			dirnames[:] = [d for d in dirnames if d not in SKIPPED_DIRS and not d.startswith(".")]
-			files += [
-				os.path.join(dirpath, name)
-				for name in filenames
-				if name.endswith(SOURCE_EXTENSIONS)
-				and not name.endswith((".min.js", ".bundle.js"))
-				and not name.startswith("test_")
-			]
-	return tuple(files)
-
-
-def _find_translated_source(message: str) -> list[dict[str, Any]]:
-	"""Where the English original of a translated message is raised (via the site's Translation
-	records); empty when it isn't a translation or the user may not read source."""
-	if not _can_read_source() or not frappe.has_permission("Translation", "read"):
-		return []
-	for original in frappe.get_list(
-		"Translation", filters={"translated_text": message.strip(" .")}, pluck="source_text", limit=2
-	):
-		hits = _find_in_source(original)
-		if hits:
-			return hits
-	return []
-
-
 def _search_needles(message: str) -> list[str]:
 	"""Short, specific strings to look for in the database: the message's fixed parts."""
 	needles = [n for n in _needles(message) + _trimmed_windows(message) if len(n) <= 140]
@@ -446,7 +315,7 @@ def _find_in_site_code(message: str) -> list[dict[str, str]]:
 	the message: an error raised from there is in no app's code."""
 	if not _can_read_source():
 		return []
-	needles = _search_needles(message)
+	needles = [n for n in _search_needles(message) if len(n) >= MIN_SITE_FRAGMENT or n == message.strip(" .")]
 	found: list[dict[str, str]] = []
 	for doctype, fields in SITE_CODE:
 		if not frappe.db.exists("DocType", doctype) or not frappe.has_permission(doctype, "read"):
@@ -506,26 +375,16 @@ def _recent_error_logs(message: str, exception: str) -> list[dict[str, Any]]:
 		order_by="creation desc",
 		limit=MAX_ERROR_LOGS,
 	)
-	if not logs and exception:
-		logs = frappe.get_list(
-			"Error Log",
-			filters=[["error", "like", f"%{exception}%"]],
-			fields=["name", "method", "creation", "error", "reference_doctype", "reference_name"],
-			order_by="creation desc",
-			limit=MAX_ERROR_LOGS,
-		)
 	return logs
 
 
 def _format(
 	message: str,
 	exception: str,
-	sources: list[dict[str, Any]],
 	logs: list[dict[str, Any]],
 	causes: list[tuple[str, str]],
 	site_code: list[dict[str, str]] | None = None,
 	failures: list[dict[str, Any]] | None = None,
-	frames: list[dict[str, Any]] | None = None,
 	help_text: str | None = None,
 ) -> str:
 	out = ["**Error diagnosis**", f"> {message}"]
@@ -537,21 +396,13 @@ def _format(
 		out.append("**Likely cause**\n" + "\n".join(f"- {cause}" for cause, _fix in causes))
 		out.append("**How to fix**\n" + "\n".join(f"- {fix}" for _cause, fix in causes))
 
-	if sources or site_code or frames:
-		# Location only — users want the cause and the fix, not the code.
-		places = [f"- {f['app']} — `{f['file']}`, line {f['line']}, in `{f['function']}` (from the traceback)" for f in frames or []]
-		places += [f"- {hit['app']} — `{hit['file']}`, line {hit['line']}" for hit in sources]
-		places += [
+	if site_code:
+		# Scripts and templates saved on this site are records the user can open; app code is never shown.
+		places = [
 			f"- {hit['doctype']} — [{hit['name']}](/desk/{hit['doctype'].lower().replace(' ', '-')}/{quote(hit['name'])})"
-			f" (a script or template saved on this site)"
-			for hit in site_code or []
+			for hit in site_code
 		]
 		out.append("**Where it comes from**\n" + "\n".join(places))
-	elif _can_read_source() and not causes:
-		out.append(
-			"**Where it comes from**\nThis exact message isn't in the installed apps' code or in this site's "
-			"scripts, print formats or notifications — it may come from a translation or a custom app."
-		)
 
 	for failure in failures or []:
 		slug = failure["doctype"].lower().replace(" ", "-")
@@ -580,7 +431,7 @@ def _format(
 
 	if help_text:
 		out.append("**From the documentation**\n" + help_text)
-	elif not (causes or sources or logs or site_code or failures or frames):
+	elif not (causes or logs or site_code or failures):
 		out.append(
 			"I couldn't find this message in the code or the Error Log, and it doesn't match a known "
 			"error type. Tell me what you were doing when it appeared (which page, which button)."

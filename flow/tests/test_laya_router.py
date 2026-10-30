@@ -287,7 +287,11 @@ class TestLayaRouter(IntegrationTestCase):
 		from flow.tools.builtins import error_diagnosis
 
 		model = MagicMock()
-		with patch.object(laya_router, "_router", return_value=_laya("TROUBLESHOOTING", 0.95)):
+		with (
+			patch.object(laya_router, "_router", return_value=_laya("TROUBLESHOOTING", 0.95)),
+			# Something for the diagnosis to report: a text nothing explains is left to the chat model.
+			patch("flow.tools.diagnosis._docs_help", return_value="Docs say: save again."),
+		):
 			result = Agent(model=model, tools=[error_diagnosis]).run("my sales order keeps exploding when I save it")
 		model.chat.assert_not_called()
 		self.assertIn("**Error diagnosis**", result.output)

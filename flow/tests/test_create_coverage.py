@@ -82,7 +82,7 @@ class TestCreateCoverage(IntegrationTestCase):
 
 	def _check(self, doctype):
 		answer = creation_steps(doctype=doctype)["answer"]
-		self.assertTrue(answer.startswith(f"**How to create a new {doctype}**"))
+		self.assertTrue(answer.startswith("1. "))
 		self.assertIn("**Save**", answer)
 
 		built = self._build(doctype)

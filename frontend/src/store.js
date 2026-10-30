@@ -26,6 +26,8 @@ const toolApprovalCache = {};
 const selectedAgent = ref(null);
 const selectedModel = ref(null);
 const sessionName = ref(null);
+// When the open chat began (a reopened chat's creation time); null for one started now.
+const threadStart = ref(null);
 const runName = ref(null);
 
 const messages = ref([]);
@@ -181,6 +183,7 @@ function setModel(name) {
 function newChat() {
 	if (sending.value) return;
 	sessionName.value = null;
+	threadStart.value = null;
 	runName.value = null;
 	// A reopened older chat may have used another agent/model; new chats return to the default.
 	const preset = agents.value.find((x) => x.name === frappe.boot.flow_default_agent);
@@ -252,6 +255,7 @@ async function switchSession(name) {
 		newChat();
 		return;
 	}
+	threadStart.value = doc.creation || null;
 	selectedAgent.value = doc.agent;
 	selectedModel.value = doc.model || null;
 	await loadToolApproval(doc.agent);
@@ -525,10 +529,13 @@ async function handleBrowserRequest(request, msg, signal) {
 	let reply;
 	try {
 		const result = await runBrowserRequest(request, {
-			onText: (delta) => {
-				appendText(msg, delta);
-				requestScroll();
-			},
+			// A silent request is the server's own yes / no question: its text is never shown.
+			onText: request.silent
+				? undefined
+				: (delta) => {
+						appendText(msg, delta);
+						requestScroll();
+				  },
 			onStatus: (status) => {
 				msg.status = status;
 				modelLoadingStatus.value = status;
@@ -610,8 +617,14 @@ function appendText(msg, delta) {
 	else if (delta.trim()) msg.parts.push(makeTextPart(delta));
 }
 
+// What the browser says when the connection to the server drops mid-answer.
+const DROPPED = /network error|failed to fetch|load failed|networkerror/i;
+
 function failMessage(msg, error) {
-	appendText(msg, `\n\n${__("Error")}: ${error.message}`);
+	const reason = DROPPED.test(error.message || "")
+		? __("The connection dropped. The model may still be loading; try again in a minute.")
+		: error.message;
+	appendText(msg, `\n\n${__("Error")}: ${reason}`);
 	msg.pending = false;
 	// A dropped stream (network error, server restart) can leave the run marked Running on
 	// the server, which blocks the session's next turn; fail it so the user can retry at once.
@@ -649,6 +662,7 @@ export function useStore() {
 		agents,
 		models,
 		recentSessions,
+		threadStart,
 		selectedAgent,
 		selectedModel,
 		sessionName,

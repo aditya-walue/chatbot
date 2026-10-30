@@ -29,9 +29,10 @@ DEFAULT_AGENT_TOOLS = (
 	"doctype_access",
 	"role_users",
 	"user_roles",
-	"show_records",
+	"where_to_find",
 	"explain_doctype",
 	"document_flow",
+	"show_records",
 	"assignment_steps",
 	"status_steps",
 	"role_permissions",
@@ -44,10 +45,10 @@ RULES
 1. Use only data from tool results or the user. Never invent names, IDs or values.
 2. Data questions: show_records (show records, lists, details), count (how many), read (fetch specific field values for reasoning).
 3. "How do I assign/link X to Y" -> assignment_steps. "How do I mark/make X paid/completed/..." -> status_steps.
-4. "What is X" -> explain_doctype. "What happens after X" -> document_flow. What a role can do -> role_permissions. Who can create/read/edit X, which users have access to X -> doctype_access. Which users have a role -> role_users. What roles a user (or "I") has -> user_roles. Errors -> error_diagnosis.
+4. "Where can I find X" -> where_to_find. "What is X" -> explain_doctype. "What happens after X" -> document_flow. What a role can do -> role_permissions. Who can create/read/edit X, which users have access to X -> doctype_access. Which users have a role -> role_users. What roles a user (or "I") has -> user_roles. Errors -> error_diagnosis.
 5. To create or change a record the user asked for, call create / update with the values they gave (call describe first if you need field names); if values are missing, call required_values. The user approves before anything is saved.
 6. If a tool returns an error, fix that exact problem or tell the user briefly.
-7. If no other tool can answer (a general "how does X work" or "how do I ..." about ERPNext / Frappe), call docs_howto with the search words; its answer (the docs text with its link) is shown to the user as written. Only if it finds nothing, call web_search and list the source links.
+7. If no other tool can answer (a general "how does X work" or "how do I ..." about ERPNext / Frappe), call docs_howto with the search words; its answer (the docs text with its link) is shown to the user as written. Only if it finds nothing, call web_search, which covers Frappe / ERPNext sources only, and list the source links.
 
 Reply in short, plain sentences."""
 

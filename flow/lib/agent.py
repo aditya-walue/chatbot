@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import frappe
+from frappe.utils.caching import redis_cache
 from frappe import _
 
 from flow.lib import tracing
@@ -312,6 +313,8 @@ class Agent:
 					result.key = call.id
 					questions.append(result)
 					continue
+				if isinstance(result, dict):
+					result.pop("options", None)  # candidates for a browser model to choose between
 
 				executed_calls.append(call)
 				results.append((call, result))
@@ -405,6 +408,15 @@ class Agent:
 		usage_total = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
 		routed = self._routed_response(messages) if route else None
+		if routed is None and route and (yield from self._outside_scope(messages)):
+			from flow.tools.web import OUT_OF_SCOPE
+
+			yield TextChunk(text=OUT_OF_SCOPE)
+			messages.append({"role": "assistant", "content": OUT_OF_SCOPE})
+			yield Done(
+				result=RunResult(output=OUT_OF_SCOPE, messages=messages, tool_calls=executed_calls, iterations=1, usage=usage_total)
+			)
+			return
 		failed_streak = 0
 		same_tool_streak, last_tools = 0, frozenset()
 		for iteration in range(1, self.max_iterations + 1):
@@ -439,6 +451,8 @@ class Agent:
 					questions.append(result)
 					yield ToolEnded(id=call.id, name=call.name, result="")
 					continue
+				if isinstance(result, dict) and result.get("options"):
+					result = yield from self._pick_option(messages, result)
 
 				executed_calls.append(call)
 				results.append((call, result))
@@ -547,12 +561,20 @@ class Agent:
 		return _recent_turns(messages), _relevant_tools(messages, tool_schemas)
 
 	def _stream_model(
-		self, messages: list[dict[str, Any]], tool_schemas: list[dict[str, Any]] | None
+		self,
+		messages: list[dict[str, Any]],
+		tool_schemas: list[dict[str, Any]] | None,
+		choices: list[str] | None = None,
 	) -> Generator[Event, None, ChatResponse]:
-		"""One streamed model call, relaying its events; returns the assembled response."""
+		"""One streamed model call, relaying its events; returns the assembled response. With
+		`choices` it is a hidden classification the model answers with one of those words."""
 		started = tracing.now()
 		try:
-			chunks = self.model.chat(messages, tools=tool_schemas, stream=True)
+			chunks = (
+				self.model.chat(messages, tools=tool_schemas, stream=True, choices=choices)
+				if choices
+				else self.model.chat(messages, tools=tool_schemas, stream=True)
+			)
 		except Exception as e:
 			self._trace_model(messages, tool_schemas, None, started, error=e)
 			raise
@@ -574,6 +596,73 @@ class Agent:
 		except Exception as e:
 			self._trace_model(messages, tool_schemas, None, started, error=e)
 			raise
+
+	def _outside_scope(self, messages: list[dict[str, Any]]) -> Generator[Event, None, bool]:
+		"""Whether the browser model says the latest message is not about this site or ERPNext /
+		Frappe (a poem, a joke, general knowledge). A 3B model does not reliably follow "refuse
+		anything else" buried in a long prompt, but answers one short IN / OUT question well, so
+		it is asked that first. Only a clear OUT counts; anything else goes on to the answer.
+		Skipped for server models and when the site sets `flow_scope_check` off."""
+		from flow.lib.webllm import is_browser_model
+
+		if not is_browser_model(getattr(self.model, "model_id", None)) or not frappe.conf.get("flow_scope_check", True):
+			return False
+		users = [str(m.get("content") or "") for m in messages if m.get("role") == "user" and isinstance(m.get("content"), str)]
+		if not users:
+			return False
+		earlier = f"Earlier message: {users[-2][:200]}\n" if len(users) > 1 else ""
+		# A record type of this site named in the message ("where can I find the customer?") says
+		# it is about the site, which a 3B model does not always see from the words alone.
+		named = _named_doctypes(users[-1])
+		# Two record types in one message ("assign an employee to a project") is about the site;
+		# no model needs to be asked.
+		if len(named) >= 2:
+			return False
+		hint = f"This site has a record type named {named[0]}, and the latest message mentions it.\n" if named else ""
+		# A word from this site's own business record types ("leave", "stock", "invoice") in the
+		# message says it is about the site, whatever a small model makes of the wording.
+		if _uses_site_words(users[-1]):
+			return False
+		reply = yield from self._silent_choice(SCOPE_CHECK, f"{hint}{earlier}Latest message: {users[-1][:400]}", ["IN", "OUT"])
+		return reply.strip().lower().startswith("out")
+
+	def _silent_choice(self, instructions: str, question: str, choices: list[str]) -> Generator[Event, None, str]:
+		"""A hidden one-word question to the browser model: its reply, never shown to the user."""
+		check = [{"role": "system", "content": instructions}, {"role": "user", "content": question}]
+		call = self._stream_model(check, None, choices)
+		try:
+			while True:
+				event = next(call)
+				if not isinstance(event, TextChunk):
+					yield event
+		except StopIteration as stop:
+			return (stop.value.content or "") if stop.value else ""
+
+	def _pick_option(self, messages: list[dict[str, Any]], result: dict[str, Any]) -> Generator[Event, None, dict[str, Any]]:
+		"""Let the browser model choose the answer among the docs sections a final-answer tool found
+		(`result["options"]`): matching words finds candidates, but only reading the question tells
+		which one answers it. "0" means none does. Anything unclear keeps the best match; server
+		models and sites with `flow_docs_pick` off keep it too."""
+		from flow.lib.webllm import is_browser_model
+
+		options = result.pop("options", None)
+		if not options or not is_browser_model(getattr(self.model, "model_id", None)) or not frappe.conf.get("flow_docs_pick", True):
+			return result
+		users = [str(m.get("content") or "") for m in messages if m.get("role") == "user" and isinstance(m.get("content"), str)]
+		if not users:
+			return result
+		listing = "\n".join(f"{i}. {o['label']}" for i, o in enumerate(options, 1))
+		reply = yield from self._silent_choice(
+			DOCS_PICK, f"Question: {users[-1][:400]}\n\nSections:\n{listing}", [str(i) for i in range(len(options) + 1)]
+		)
+		picked = reply.strip().split(".")[0].strip()
+		if picked == "0":
+			from flow.tools.web import NOT_IN_DOCS
+
+			return {**result, "answer": NOT_IN_DOCS}
+		if picked.isdigit() and 1 <= int(picked) <= len(options):
+			return {**result, "answer": options[int(picked) - 1]["answer"]}
+		return result
 
 	def _begin_trace(self, messages: list[dict[str, Any]]) -> None:
 		"""Open the Opik trace for this run (a no-op unless tracing is on)."""
@@ -632,6 +721,8 @@ class Agent:
 			try:
 				arguments = tool.route(text)
 			except Exception:
+				# A broken route must not fail the chat (the model answers instead), but not hide either.
+				frappe.logger("flow", allow_site=True).warning("Route of %s failed", tool.name, exc_info=True)
 				arguments = None
 			if arguments and added_id and tool.name == "show_records" and not arguments.get("about"):
 				continue
@@ -648,7 +739,7 @@ class Agent:
 		# confident; it returns None (chat model as usual) when disabled, unsure or unavailable.
 		from flow.lib import laya_router
 
-		# Laya reads the record type from the page but not the record ID: an ID like HR-EMP-00005
+		# Laya reads the record type from the page but not the record ID: an ID like AB-XYZ-00005
 		# reads to the classifier like an error code.
 		page_type = {"doctype": self.page["doctype"]} if (self.page or {}).get("doctype") else None
 		laya_text = _with_referenced_doctype(last["content"], messages, page_type)
@@ -722,6 +813,8 @@ class Agent:
 		tool = self._redirect(call, tool, messages)
 		context = _grounding_text(messages) if messages is not None else None
 		problem = tool.precheck(call.arguments, context) if tool.precheck else None
+		if not problem and messages is not None and not call.id.startswith(ROUTED_PREFIX):
+			problem = _unmentioned(tool, call.arguments, messages, self.page)
 		if problem:
 			self._trace.span(call.name, type="tool", input=call.arguments, started=tracing.now(), error=problem)
 			return json.dumps({"error": problem})
@@ -739,7 +832,18 @@ class Agent:
 			self._trace.span(call.name, type="tool", input=call.arguments, started=started, error=e)
 			return json.dumps({"error": str(e)[:ERROR_MESSAGE_LIMIT]})
 		self._trace.span(call.name, type="tool", input=call.arguments, output=result, started=started)
+		if tool.requires_confirmation:
+			_save_write()
 		return result
+
+
+def _save_write() -> None:
+	"""Commit what an approved write tool just saved. A streamed response is iterated after the
+	framework's own end-of-request commit, and the stream stays open while the browser model writes
+	its reply (minutes while it loads), so the write would otherwise stay uncommitted, invisible
+	to others and lost if the connection drops."""
+	if not frappe.flags.in_test:
+		frappe.db.commit()
 
 
 # Tools that return schema and help text, not data: an option they list ("Gender: Male / Female
@@ -773,7 +877,7 @@ TOOL_GROUPS: tuple[tuple[re.Pattern, tuple[str, ...]], ...] = tuple(
 	)
 )
 # Looking things up is what the model falls back on when no specific intent matched.
-DEFAULT_TOOLS = ("show_records", "count", "read", "find_doctypes")
+DEFAULT_TOOLS = ("show_records", "count", "read", "find_doctypes", "where_to_find")
 MAX_TOOLS = 6
 # Always offered beside the chosen tools: the fallback when none of them can answer.
 FALLBACK_TOOLS = ("docs_howto", "frappe_docs", "web_search")
@@ -816,9 +920,102 @@ def _recent_turns(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 	return system + messages[start:]
 
 
+# The one question the browser model is asked before it answers a message no route took.
+SCOPE_CHECK = (
+	"You filter messages for an assistant that helps with a company's ERPNext / Frappe site. "
+	"Answer IN or OUT. IN: the message is about business software or the site: its records, users, "
+	"roles, permissions, settings, reports, errors, emails, notifications, alerts, reminders, "
+	"where to find, open or see a record type of the site (customers, items, invoices), "
+	"workflows, accounting, taxes (such as GST or VAT), invoices, stock, HR or sales, or about how "
+	"to do or set up something in ERPNext / Frappe, or is a greeting, thanks, or a short follow-up "
+	"to the earlier message. OUT: only what clearly has nothing to do with business software, such "
+	"as a poem, a joke, general knowledge, maths, coding or career advice, weather, news or a "
+	"translation. If unsure, answer IN."
+)
+
+# The question the browser model is asked to pick the docs section that answers a how-to.
+DOCS_PICK = (
+	"You pick which numbered documentation section answers the user's question. Answer with its "
+	"number only. Answer 0 if none of them answers the question."
+)
+
+# Words of a message looked at for record types: each window is a lookup, and a long paste is no question.
+MAX_NAMED_WORDS = 60
+MIN_SITE_WORD = 4
+
+# Ids of tool calls made by a route; a call with another id was chosen by the model.
+ROUTED_PREFIX = "route_"
+
+
+@redis_cache(ttl=3600)
+def _site_vocabulary() -> list[str]:
+	"""Every word of 4+ letters in the names of this site's business record types ("leave",
+	"valuation", "invoice"), singular. Core Frappe's own types are left out, so its generic words
+	("list", "about") don't count."""
+	apps = dict(frappe.get_all("Module Def", fields=["name", "app_name"], as_list=True))
+	words: set[str] = set()
+	for name, module in frappe.get_all("DocType", filters={"istable": 0, "issingle": 0}, fields=["name", "module"], as_list=True):
+		if apps.get(module) in (None, "frappe"):
+			continue
+		words.update(_singular(w) for w in name.lower().split() if len(w) >= MIN_SITE_WORD and w.isalpha())
+	return sorted(words)
+
+
+def _singular(word: str) -> str:
+	return word[:-1] if len(word) > MIN_SITE_WORD and word.endswith("s") else word
+
+
+def _uses_site_words(text: str) -> bool:
+	"""Whether the message has a word from the site's business vocabulary."""
+	letters = "".join(c if c.isalpha() else " " for c in (text or "").lower())
+	vocabulary = set(_site_vocabulary())
+	return any(_singular(w) in vocabulary for w in letters.split()[:MAX_NAMED_WORDS] if len(w) >= MIN_SITE_WORD)
+
+
+def _named_doctypes(text: str) -> list[str]:
+	"""The distinct record types of this site a message names, longest names first ("sales
+	invoice" is one type, not "sales" and "invoice"); misspellings and plurals are matched as in
+	routes."""
+	from flow.tools.builtins import _doctype_from_phrase
+
+	letters = "".join(c if c.isalpha() or c == "-" else " " for c in (text or "").lower())
+	words = letters.split()[:MAX_NAMED_WORDS]
+	used: set[int] = set()
+	found: list[str] = []
+	for size in range(min(4, len(words)), 0, -1):
+		for start in range(len(words) - size + 1):
+			span = set(range(start, start + size))
+			if span & used:
+				continue
+			doctype = _doctype_from_phrase(" ".join(words[start : start + size]))
+			if doctype:
+				used |= span
+				if doctype not in found:
+					found.append(doctype)
+	return found
+
+
+def _unmentioned(tool: Tool, arguments: dict[str, Any], messages: list[dict[str, Any]], page: dict[str, str] | None) -> str | None:
+	"""An error for a model-chosen call whose `tool.named_in_conversation` argument names something
+	nobody mentioned (neither the user, a tool result, nor the open page), so the model asks
+	instead of answering about a guess."""
+	value = arguments.get(tool.named_in_conversation) if tool.named_in_conversation else None
+	if not isinstance(value, str) or not value.strip():
+		return None
+	seen = "\n".join(str(m.get("content") or "") for m in messages if m.get("role") in ("user", "tool")).lower()
+	seen += f"\n{(page or {}).get('doctype', '')}".lower()
+	words = [w for w in value.lower().replace("-", " ").split() if w]
+	if all((w[:-1] if len(w) > 3 and w.endswith("s") else w) in seen for w in words):
+		return None
+	return (
+		f"Nobody mentioned {value!r}. Do not guess: ask the user which {tool.named_in_conversation} they mean, "
+		"or use the one they named."
+	)
+
+
 def _routed_call(name: str, arguments: dict[str, Any]) -> ChatResponse:
 	"""A routed tool call, shaped like a model response that made it."""
-	call = ToolCall(id=f"route_{uuid.uuid4().hex[:12]}", name=name, arguments=arguments)
+	call = ToolCall(id=f"{ROUTED_PREFIX}{uuid.uuid4().hex[:12]}", name=name, arguments=arguments)
 	return ChatResponse(content=None, tool_calls=[call])
 
 
@@ -908,7 +1105,7 @@ def _research_answer(messages: list[dict[str, Any]]) -> str | None:
 		page = result.get("page")
 		if isinstance(page, dict) and page.get("url") and (page.get("text") or page.get("snippet")):
 			text = str(page.get("text") or page["snippet"])[:RESEARCH_TEXT_LIMIT].rstrip()
-			return f"This is what the Frappe documentation says ({page.get('title') or 'page'}):\n\n{text}\n\nSource: {page['url']}"
+			return f"{text}\n\nSource: {page['url']}"
 		found = [r for r in result.get("results") or [] if isinstance(r, dict) and r.get("url")]
 		if found:
 			lines = [f"- {r.get('title') or r['url']}: {r['url']}" for r in found]

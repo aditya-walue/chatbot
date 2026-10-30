@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import UserMessage from "./UserMessage.vue";
 import AssistantMessage from "./AssistantMessage.vue";
 import EmptyState from "./EmptyState.vue";
@@ -7,7 +7,17 @@ import { FeatherIcon } from "@/lib/ui";
 import { useStore } from "@/store";
 import { __ } from "@/lib/translate";
 
-const { messages, needsSetup, agents, models, scrollTick, forceScroll } = useStore();
+const { messages, needsSetup, agents, models, scrollTick, forceScroll, threadStart } = useStore();
+
+// The day the chat began, between hairlines above its first message.
+const day = computed(() => {
+	const start = threadStart.value ? new Date(String(threadStart.value).replace(" ", "T")) : new Date();
+	if (Number.isNaN(start.getTime())) return __("Today");
+	const days = Math.floor((new Date().setHours(0, 0, 0, 0) - new Date(start).setHours(0, 0, 0, 0)) / 864e5);
+	if (days <= 0) return __("Today");
+	if (days === 1) return __("Yesterday");
+	return start.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+});
 
 const el = ref(null);
 let frame = 0;
@@ -50,6 +60,8 @@ watch(scrollTick, () => {
 				:has-models="models.length > 0"
 				:has-agents="agents.length > 0"
 			/>
+
+			<div v-if="messages.length" class="flow-day">{{ day }}</div>
 
 			<template v-for="msg in messages" :key="msg.id">
 				<template v-if="msg.role === 'user'">

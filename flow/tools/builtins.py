@@ -9,6 +9,7 @@ from urllib.parse import quote
 from typing import Annotated, Any, Literal
 
 import frappe
+from frappe.model import child_table_fields, default_fields, optional_fields
 from frappe import _
 
 from flow.lib.tool import LayaRoute, LayaSignals, Tool, tool
@@ -193,7 +194,12 @@ def _precheck_query(args: dict[str, Any]) -> str | None:
 	import difflib
 
 	doctype, filters = args.get("doctype"), args.get("filters")
-	if not doctype or not frappe.db.exists("DocType", doctype) or not isinstance(filters, dict):
+	if not doctype or not frappe.db.exists("DocType", doctype):
+		return None
+	unknown_fields = _unknown_columns(doctype, args.get("fields"))
+	if unknown_fields:
+		return unknown_fields
+	if not isinstance(filters, dict):
 		return None
 	for option in QUERY_OPTIONS:
 		if option in filters:
@@ -230,6 +236,31 @@ def _precheck_query(args: dict[str, Any]) -> str | None:
 			'like {"status": "Paid"}; put order_by, fields and limit beside it.' + hint
 		)
 	return None
+
+
+# Columns Frappe adds to every record or child row (parent, _assign, _comments, ...): valid in `fields`.
+DOCUMENT_COLUMNS = frozenset(default_fields) | frozenset(child_table_fields) | frozenset(optional_fields)
+
+
+def _unknown_columns(doctype: str, fields: Any) -> str | None:
+	"""An error naming the plain column names in `fields` that are not fields of the DocType, with
+	the closest real ones; expressions ("sum(total)", "*", "name as id") are left to Frappe."""
+	import difflib
+
+	if not isinstance(fields, list):
+		return None
+	meta = frappe.get_meta(doctype)
+	names = [f.fieldname for f in meta.fields if f.fieldtype not in LAYOUT_FIELDTYPES]
+	unknown = [
+		f for f in fields if isinstance(f, str) and f.isidentifier() and not (meta.has_field(f) or f in STANDARD_COLUMNS or f in DOCUMENT_COLUMNS)
+	]
+	if not unknown:
+		return None
+	parts = []
+	for name in unknown:
+		close = difflib.get_close_matches(name.lower(), names, n=3, cutoff=0.5)
+		parts.append(repr(name) + (f" (did you mean {', '.join(close)}?)" if close else ""))
+	return f"Not fields of {doctype}: {', '.join(parts)}. describe() the DocType for its fieldnames."
 
 
 def _select_field_for_value(meta: Any, value: Any) -> str | None:
@@ -329,6 +360,7 @@ def small_talk(kind: Annotated[str, '"greeting" or "thanks".'] = "greeting") -> 
 	final_answer=True,
 	route=lambda text: _route_required_values(text),
 	laya=LayaRoute("CREATE", lambda text, signals: _laya_required_values(text)),
+	named_in_conversation="doctype",
 )
 def required_values(doctype: DocTypeArg) -> dict[str, Any]:
 	"""Ask for the values needed to create a record of a DocType, with an example line to fill
@@ -369,6 +401,7 @@ def required_values(doctype: DocTypeArg) -> dict[str, Any]:
 	final_answer=True,
 	route=lambda text: _route_creation_steps(text),
 	laya=LayaRoute("HOWTO", lambda text, signals: _laya_creation_steps(text)),
+	named_in_conversation="doctype",
 )
 def creation_steps(doctype: DocTypeArg) -> dict[str, Any]:
 	"""Steps to create a NEW record of a DocType by hand in the desk, from this site's required
@@ -411,10 +444,7 @@ def creation_steps(doctype: DocTypeArg) -> dict[str, Any]:
 		steps.append(f"Move it through the **{workflow}** workflow using the **Actions** button.")
 
 	numbered = "\n".join(f"{i}. {step}" for i, step in enumerate(steps, 1))
-	answer = (
-		f"**How to create a new {doctype}**\n\n{numbered}\n\n"
-		"All other fields are optional."
-	)
+	answer = f"{numbered}\n\nAll other fields are optional."
 	return {"doctype": doctype, "answer": answer}
 
 
@@ -607,8 +637,20 @@ def _creation_target(text: str) -> str | None:
 def _laya_creation_steps(text: str) -> dict[str, Any] | None:
 	# HOWTO covers any "how do I ..." but creation_steps only answers how to create a record,
 	# so it takes the message only when it asks to create the DocType it names.
+	if _is_create_command(text):
+		return None
 	doctype = _creation_target(text)
 	return {"doctype": doctype} if doctype else None
+
+
+def _is_create_command(text: str) -> bool:
+	"""A request to create a record with details ("create a customer named X"), which is a write
+	for the approval card, not a how-to, however Laya classifies it."""
+	match = CREATE_REQUEST.match(text or "")
+	if not match:
+		return False
+	words = match.group("rest").split()
+	return any(_doctype_from_phrase(" ".join(words[:n]).strip(":,;-")) and len(words) > n for n in range(min(4, len(words)), 0, -1))
 
 
 def _laya_required_values(text: str) -> dict[str, Any] | None:
@@ -706,8 +748,23 @@ def _parse_create_request(text: str) -> tuple[str, dict[str, Any]] | None:
 	rest = re.sub(r"^(?:with|for|having|where|:|-)\s+", "", rest, flags=re.IGNORECASE)
 	if not rest or rest.lower() in ("please", "for me", "now"):
 		return doctype, {}
-	record = _parse_values(doctype, rest)
+	record = _parse_values(doctype, rest) or _parse_name(doctype, rest)
 	return (doctype, record) if record else None
+
+
+NAME_PHRASE = re.compile(r"^(?:named|called|titled|name(?:d)?(?:\s+(?:is|as))?)\s+(?P<value>.+)$", re.IGNORECASE)
+
+
+def _parse_name(doctype: str, text: str) -> dict[str, Any] | None:
+	"""{title field: value} for "named X" / "with name X": the name a record is known by is the
+	DocType's own title field (or the field its naming rule takes the ID from)."""
+	match = NAME_PHRASE.match(text.strip())
+	if not match:
+		return None
+	meta = frappe.get_meta(doctype)
+	field = meta.title_field or (meta.autoname[len("field:") :] if (meta.autoname or "").startswith("field:") else None)
+	value = match.group("value").strip(" :=\"'")
+	return {field: value} if field and value and meta.get_field(field) else None
 
 
 def _parse_values(doctype: str, text: str) -> dict[str, Any] | None:
@@ -1115,6 +1172,9 @@ def _apply_action(doctype: str, name: str, action: str, args: dict[str, Any]) ->
 
 
 def _precheck_create(args: dict[str, Any], context: str | None = None) -> str | None:
+	doctype = args.get("doctype")
+	if isinstance(doctype, str) and doctype and not frappe.db.exists("DocType", doctype):
+		return f"{doctype!r} is not a DocType on this site. Use find_doctypes for the exact name."
 	# A single object plainly means one record — small models often drop the list brackets.
 	# Normalised in place so the approval card and the call itself both see a list.
 	if isinstance(args.get("records"), dict):
@@ -1763,6 +1823,7 @@ from flow.tools.answers import (  # noqa: E402
 	role_permissions,
 	show_records,
 	status_steps,
+	where_to_find,
 )
 from flow.tools.diagnosis import error_diagnosis  # noqa: E402
 from flow.tools.web import docs_howto, frappe_docs, web_search  # noqa: E402
@@ -1774,9 +1835,10 @@ BUILTIN_TOOLS: list[Tool] = [
 	required_values,
 	small_talk,
 	error_diagnosis,
-	show_records,
+	where_to_find,
 	explain_doctype,
 	document_flow,
+	show_records,
 	assignment_steps,
 	status_steps,
 	role_permissions,

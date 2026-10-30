@@ -22,9 +22,11 @@ from __future__ import annotations
 
 import re
 from typing import Annotated, Any
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import frappe
+from frappe import _
+from frappe.utils import get_url_to_form, get_url_to_list, get_url_to_workspace
 
 from flow.lib.tool import LayaRoute, tool
 
@@ -43,12 +45,13 @@ def _builtins():
 	return builtins
 
 LIST_LIMIT = 20
+MAX_WORKSPACES = 3
 # The most records one list shows, whatever limit is asked for.
 LIST_ALL_LIMIT = 200
 MAIN_FIELDS_LIMIT = 6
 
 # A token that looks like a record ID: letters and digits joined by dashes/dots/slashes, with a
-# digit somewhere ("ACC-SINV-2026-00008", "HR-EMP-00003", "PO/24/001").
+# digit somewhere ("ACC-SINV-2026-00008", "AB-XYZ-00003", "PO/24/001").
 RECORD_ID = re.compile(r"\b[A-Za-z][A-Za-z0-9]*(?:[-./][A-Za-z0-9]+)*[-./]?\d[A-Za-z0-9-./]*\b")
 SHOW_RECORD = re.compile(
 	r"\b(show|details?|detail|info(?:rmation)?|status|open|view|display|get|tell\s+me\s+about|what\s+is)\b",
@@ -469,7 +472,7 @@ def _route_explain_doctype(text: str) -> dict[str, Any] | None:
 	return {"doctype": doctype} if doctype else None
 
 
-@tool(final_answer=True, route=_route_explain_doctype)
+@tool(final_answer=True, route=_route_explain_doctype, named_in_conversation="doctype")
 def explain_doctype(doctype: DocTypeArg) -> dict[str, Any]:
 	"""Explain what one DocType is: module, purpose, lifecycle, main fields and links. Use for
 	"what is <DocType>". Not for a module, app or feature as a whole ("how does payroll work"): use
@@ -510,6 +513,50 @@ def explain_doctype(doctype: DocTypeArg) -> dict[str, Any]:
 	return {"answer": "\n\n".join(parts), "doctype": doctype}
 
 
+# ── where_to_find ─────────────────────────────────────────────────────────────────────────
+
+
+@tool(final_answer=True, named_in_conversation="doctype")
+def where_to_find(doctype: DocTypeArg) -> dict[str, Any]:
+	"""Where a record type is in the desk: its module, links to its list and to a new record, and
+	the workspaces that link to it. Use when the user asks where to find, open or see a record
+	type ("where can I find employees", "where do I see sales orders"). Not for the records
+	themselves: use show_records."""
+	if not frappe.has_permission(doctype, "read"):
+		raise PermissionError(f"No permission to read {doctype}")
+	meta = frappe.get_meta(doctype)
+	lines = [_("**{0}** is in the **{1}** module.").format(doctype, meta.module)]
+	if meta.issingle:
+		lines.append("- " + _("It is a single settings page: [open it]({0}).").format(_path(get_url_to_list(doctype))))
+	else:
+		lines.append("- " + _("See the records: [{0} list]({1}).").format(doctype, _path(get_url_to_list(doctype))))
+		if frappe.has_permission(doctype, "create"):
+			lines.append("- " + _("Add one: [New {0}]({1}).").format(doctype, _path(get_url_to_form(doctype, "new"))))
+	for workspace, public in _workspaces_linking(doctype):
+		lines.append("- " + _("It is also on the [{0}]({1}) workspace.").format(workspace, get_url_to_workspace(workspace, public)))
+	return {"answer": "\n".join(lines), "doctype": doctype}
+
+
+def _path(url: str) -> str:
+	"""A link on this site as a path, so it works whatever address the user opened the site on."""
+	return urlparse(url).path
+
+
+def _workspaces_linking(doctype: str) -> list[tuple[str, bool]]:
+	"""(name, is public) of the workspaces this user can open that have a link or shortcut to
+	`doctype`."""
+	found: list[str] = []
+	for child in ("Workspace Link", "Workspace Shortcut"):
+		if frappe.db.exists("DocType", child):
+			found += frappe.get_all(child, filters={"link_to": doctype}, pluck="parent", limit=MAX_WORKSPACES)
+	if not found:
+		return []
+	rows = frappe.get_list(
+		"Workspace", filters={"name": ["in", list(dict.fromkeys(found))]}, fields=["name", "public"], limit=MAX_WORKSPACES
+	)
+	return [(row.name, bool(row.public)) for row in rows]
+
+
 # ── document_flow ─────────────────────────────────────────────────────────────────────────
 
 
@@ -519,7 +566,7 @@ def _route_document_flow(text: str) -> dict[str, Any] | None:
 	return {"doctype": doctype} if doctype else None
 
 
-@tool(final_answer=True, route=_route_document_flow)
+@tool(final_answer=True, route=_route_document_flow, named_in_conversation="doctype")
 def document_flow(doctype: DocTypeArg) -> dict[str, Any]:
 	"""Where a DocType sits in its business process: lifecycle, approval workflow, the documents
 	it is made from and the ones made from it next. Use for "what happens after <DocType>"."""
@@ -588,19 +635,23 @@ LOOSE_ASSIGNMENT = re.compile(
 )
 
 
-def assignment_arguments(item_phrase: str, target_phrase: str) -> dict[str, Any] | None:
-	"""{"item", "target"} when both phrases name DocTypes the metadata can connect, else None."""
+def assignment_arguments(item_phrase: str, target_phrase: str, connected: bool = True) -> dict[str, Any] | None:
+	"""{"item", "target"} when both phrases name DocTypes, and (with `connected`) the metadata can
+	connect them, else None."""
 	find = _builtins()._find_doctype_in_text
 	item = find(item_phrase) or _assignment_doctype_for(item_phrase)
 	target = find(target_phrase)
-	if not item or not target or item == target or not _assignment_paths(item, target):
+	if not item or not target or item == target or (connected and not _assignment_paths(item, target)):
 		return None
 	return {"item": item, "target": target}
 
 
 def loose_assignment(text: str) -> dict[str, Any] | None:
+	"""For a loosely worded question ("is it possible to assign an employee to a project?") that
+	names two record types, the tool answers from this site's metadata even when nothing links them
+	(it says so): a docs page about some other kind of assignment would be the wrong answer."""
 	match = LOOSE_ASSIGNMENT.search(text or "")
-	return match and assignment_arguments(match.group("item"), match.group("target"))
+	return match and assignment_arguments(match.group("item"), match.group("target"), connected=False)
 
 
 @tool(
@@ -662,6 +713,15 @@ def _assignment_paths(item: str, target: str) -> list[list[tuple[str, Any]]]:
 		if via.istable or via.issingle:
 			continue
 		candidates += [(0, [(target, link), (link.options, f)]) for f in _fields_to(link.options, item)]
+	# Last resort: the item links to a record (an Employee's user) that a table of the target lists
+	# (a Project's users), so the target takes the item through it.
+	for link in frappe.get_meta(item).fields:
+		if link.fieldtype != "Link" or not link.options or link.options in (item, target) or link.hidden:
+			continue
+		via = frappe.get_meta(link.options)
+		if via.istable or via.issingle:
+			continue
+		candidates += [(-1, [(item, link), (target, f)]) for f in _fields_to(target, link.options) if f.fieldtype != "Link"]
 	ranked = sorted(enumerate(candidates), key=lambda c: (-(c[1][0] + _fit(c[1][1][-1][1], item, target)), c[0]))
 	return [path for _, (_, path) in ranked]
 
@@ -713,7 +773,14 @@ def _fields_to(doctype: str, other: str, dynamic: bool = False) -> list[Any]:
 
 def _describe_path(item: str, target: str, path: list[tuple[str, Any]]) -> str:
 	steps = []
-	if len(path) == 2:
+	if len(path) == 2 and path[0][0] == item:
+		(_, link), (_, field) = path
+		held = link.options
+		steps.append(f"{item} has no field of its own on the {target}: they connect through the **{held}** the {item} links to.")
+		steps.append(f"1. Open the {item} ([list](/desk/{_route(item)})) and check **{link.label}**: that's the {held} to add.")
+		steps.append(f"2. Open the {target} ([list](/desk/{_route(target)})) and {_where(target, field)}{_fill(field, held)}.")
+		steps.append(f"3. Save the {target}.")
+	elif len(path) == 2:
 		(_, link), (via, field) = path
 		steps.append(
 			f"{item} isn't set on the {target} itself: it's set on the **{via}** the {target} links to."

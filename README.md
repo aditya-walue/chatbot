@@ -178,6 +178,9 @@ The default repo is public. A private repo needs a read token: the `HF_TOKEN` en
 | --- | --- |
 | `flow_laya_enabled`, `flow_laya_threshold`, `flow_laya_model_path`, `flow_laya_backend`, `flow_laya_cache_dir`, `flow_hf_token` | Laya (see above) |
 | `flow_webllm_strict_json`, `flow_webllm_compact_context` | Browser-model prompting (both default on) |
+| `flow_scope_check` | Ask the browser model one IN / OUT question before answering a message no route took, so jokes, poems and general knowledge get "ask ERP questions" (default on) |
+| `flow_docs_pick` | Let the browser model choose, among the best-matching docs sections of a how-to answer, the one that answers the question, or say none does (default on) |
+| `flow_web_search_domains` | Sources `web_search` may return (default: Frappe / ERPNext sites) |
 | `flow_opik_enabled`, `flow_opik_project`, `flow_opik_url`, `flow_opik_api_key`, `flow_opik_workspace`, `flow_opik_capture_content` | Optional Opik tracing (`pip install -e "apps/flow[opik]"`) |
 
 ## Development
