@@ -15,6 +15,7 @@ from flow.tools.answers import (
 	explain_doctype,
 	role_permissions,
 	show_records,
+	where_to_find,
 )
 
 
@@ -50,6 +51,31 @@ class TestAnswerRoutes(IntegrationTestCase):
 		self.assertIn(f"[{todo.name}](/desk/todo/{todo.name})", one)
 		listed = show_records(doctype="ToDo", filters={"status": "Open"})["answer"]
 		self.assertIn("ToDo record", listed)
+
+	def test_where_to_find_points_to_the_list_and_new_form_from_frappes_own_links(self):
+		from urllib.parse import urlparse
+
+		from frappe.utils import get_url_to_form, get_url_to_list
+
+		answer = where_to_find(doctype="ToDo")["answer"]
+		self.assertIn("**ToDo** is in the **", answer)
+		self.assertIn(f"[ToDo list]({urlparse(get_url_to_list('ToDo')).path})", answer)
+		self.assertIn(f"[New ToDo]({urlparse(get_url_to_form('ToDo', 'new')).path})", answer)
+		self.assertNotIn("search bar", answer)
+
+	def test_where_to_find_has_no_route_of_its_own_and_the_model_is_offered_it(self):
+		from flow.lib.agent import DEFAULT_TOOLS
+		from flow.tools.builtins import BUILTIN_TOOLS
+
+		tool = next(t for t in BUILTIN_TOOLS if t.name == "where_to_find")
+		self.assertIsNone(tool.route)
+		self.assertIn("where_to_find", DEFAULT_TOOLS)
+
+	def test_a_definition_question_is_answered_before_the_record_list(self):
+		from flow.tools.builtins import BUILTIN_TOOLS
+
+		names = [t.name for t in BUILTIN_TOOLS]
+		self.assertLess(names.index("explain_doctype"), names.index("show_records"))
 
 	def test_definition_and_flow_routes(self):
 		self.assertEqual(_route_explain_doctype("what is a todo?"), {"doctype": "ToDo"})
@@ -141,6 +167,38 @@ class TestAssignmentSteps(IntegrationTestCase):
 	def test_unrelated_or_unknown_doctypes_fall_through(self):
 		self.assertEqual(self._answer("how do I link my car to the moon")[0], None)
 		self.assertEqual(self._answer("how do I assign a note to a note")[0], None)
+
+	def test_an_item_reaches_a_target_through_a_record_it_links_to(self):
+		from flow.tools.answers import _assignment_paths, assignment_steps
+
+		if not (frappe.db.exists("DocType", "Employee") and frappe.db.exists("DocType", "Project")):
+			self.skipTest("needs Employee and Project")
+		paths = _assignment_paths("Employee", "Project")
+		self.assertTrue(paths)
+		answer = assignment_steps.func(item="Employee", target="Project")["answer"]
+		self.assertIn("connect through the **User** the Employee links to", answer)
+		self.assertIn("table", answer)
+
+	def test_a_loose_question_naming_two_record_types_is_answered_from_metadata_even_without_a_link(self):
+		from flow.tools.answers import _assignment_paths, assignment_steps, loose_assignment
+
+		# Two record types the metadata does not link: the strict route says nothing, the loose one
+		# still reaches the tool, which then says there is no direct link.
+		pair = next(
+			(
+				(a, b)
+				for a, b in (("Note", "Role"), ("ToDo", "Note"), ("Note", "Language"), ("Role", "Language"))
+				if not _assignment_paths(a, b)
+			),
+			None,
+		)
+		if not pair:
+			self.skipTest("every candidate pair is linked on this site")
+		text = f"is it possible to assign a {pair[0].lower()} to a {pair[1].lower()}?"
+		args = loose_assignment(text)
+		self.assertEqual(args, {"item": pair[0], "target": pair[1]})
+		self.assertIn("no field or table", assignment_steps.func(**args)["answer"])
+		self.assertIsNone(loose_assignment("is it possible to assign a thing to a place?"))
 
 
 class TestStatusSteps(IntegrationTestCase):

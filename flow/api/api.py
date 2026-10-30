@@ -107,20 +107,23 @@ def recover_session(session: str) -> dict[str, int]:
 	_assert_session_owner(doc)
 
 	abandoned = frappe.get_all("Flow Run", filters={"session": doc.name, "status": "Running"}, pluck="name")
+	recovered = 0
 	for name in abandoned:
 		# The run's own stream may be writing the same row as it unwinds; a deadlock there means
-		# it is finishing, so one retry (then leave it) is enough.
-		for attempt in (1, 2):
+		# it is finishing, so one retry (then leave it) is enough. No rollback here: the database
+		# has already rolled the transaction back, and a second one would hide other pending writes.
+		for _attempt in (1, 2):
 			try:
 				frappe.db.set_value(
 					"Flow Run",
 					name,
 					{"status": "Failed", "error": "Run abandoned: stream ended without completing."},
 				)
+				recovered += 1
 				break
 			except frappe.QueryDeadlockError:
-				frappe.db.rollback()
-	return {"recovered": len(abandoned)}
+				frappe.logger("flow", allow_site=True).warning("Deadlock recovering run %s", name)
+	return {"recovered": recovered}
 
 
 FEEDBACK_COMMENT_LIMIT = 500

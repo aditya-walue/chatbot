@@ -12,14 +12,18 @@ const MIN_WIDTH = 340;
 const MIN_HEIGHT = 420;
 const EDGE = 24; // gap between the popup and the window edges
 const LAYOUT_VERSION = 2; // older saved states were a docked full-height sidebar
+const LAUNCHER_SIZE = 64;
+const DRAG_THRESHOLD = 4; // px a pointer must travel before a press on the launcher is a drag, not a click
+const PEEK_WIDTH = 290;
 const EASE = "cubic-bezier(0.2, 0.8, 0.2, 1)";
 
 const BLUE = "#2f5f9e";
+const LAUNCHER_BLUE = "#34508f"; // the button is a deeper navy than the panel accent
 const SPARKLE = `<path d="M12 7.2l1.15 3.1 3.1 1.15-3.1 1.15L12 15.7l-1.15-3.1-3.1-1.15 3.1-1.15L12 7.2z" fill="currentColor" stroke="none" />`;
-// Speech bubble with a sparkle inside. The launcher sits outside #flow-root, so no Vue/CSS here.
-const LAUNCHER_ICON = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-	<path d="M12 3.2a8.3 8.3 0 1 1-3.9 15.6L3.6 20l1.2-4.3A8.3 8.3 0 0 1 12 3.2z" />
-	${SPARKLE}
+// Filled speech bubble (rounded square, tail at the bottom-left). The launcher sits outside
+// #flow-root, so no Vue/CSS here.
+const LAUNCHER_ICON = `<svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+	<path d="M6.5 3.5h11A3.5 3.5 0 0 1 21 7v6.5a3.5 3.5 0 0 1-3.5 3.5H11l-4.6 3.6a.6.6 0 0 1-.97-.5V17A3.5 3.5 0 0 1 3 13.5V7a3.5 3.5 0 0 1 3.5-3.5z" />
 </svg>`;
 const BRAND_ICON = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true">
 	<path d="M12 3.5l2 6.5 6.5 2-6.5 2-2 6.5-2-6.5-6.5-2 6.5-2 2-6.5z" />
@@ -37,6 +41,9 @@ class FlowPanel {
 		const current = saved.v === LAYOUT_VERSION;
 		this._width = (current && saved.width) || POPUP_WIDTH;
 		this._height = (current && saved.height) || POPUP_HEIGHT;
+		// Where the user left the window and the button: offsets from the right and bottom edges.
+		this._dock = this._savedOffset(saved.dock);
+		this._launcherDock = this._savedOffset(saved.launcher);
 		// The popup is the default; a saved full-screen preference wins on reload.
 		this._initialFullscreen = current ? Boolean(saved.fullscreen) : false;
 
@@ -46,6 +53,68 @@ class FlowPanel {
 		this._registerShortcut();
 
 		watch(this.store.sessionName, () => this._persist());
+	}
+
+	_savedOffset(value) {
+		const ok = (n) => typeof n === "number" && Number.isFinite(n);
+		return { right: ok(value?.right) ? value.right : EDGE, bottom: ok(value?.bottom) ? value.bottom : EDGE };
+	}
+
+	// Keep a box of `width` x `height` fully inside the window, whatever was saved or dragged to.
+	_clamp(dock, width, height) {
+		return {
+			right: Math.min(Math.max(0, window.innerWidth - width), Math.max(0, dock.right)),
+			bottom: Math.min(Math.max(0, window.innerHeight - height), Math.max(0, dock.bottom)),
+		};
+	}
+
+	// The popup's size as laid out now (what was saved, kept inside the window).
+	_size() {
+		return {
+			width: Math.min(window.innerWidth - EDGE * 2, Math.max(MIN_WIDTH, this._width)),
+			height: Math.min(window.innerHeight - EDGE * 2, Math.max(MIN_HEIGHT, this._height)),
+		};
+	}
+
+	// Which corner of the window a box sits in: the popup grows away from that corner, so the
+	// button and the popup share one corner wherever the user put them.
+	_corner(box) {
+		return { left: box.left + box.width / 2 < window.innerWidth / 2, top: box.top + box.height / 2 < window.innerHeight / 2 };
+	}
+
+	// Where the popup opens: on the button, sharing its nearest corner, and inside the window.
+	_dockFromLauncher() {
+		const { width, height } = this._size();
+		const { right, bottom } = this._launcherDock;
+		const left = window.innerWidth - right - LAUNCHER_SIZE;
+		const top = window.innerHeight - bottom - LAUNCHER_SIZE;
+		const corner = this._corner({ left, top, width: LAUNCHER_SIZE, height: LAUNCHER_SIZE });
+		this._origin = `${corner.left ? "left" : "right"} ${corner.top ? "top" : "bottom"}`;
+		return this._clamp(
+			{
+				right: corner.left ? window.innerWidth - left - width : right,
+				bottom: corner.top ? window.innerHeight - top - height : bottom,
+			},
+			width,
+			height
+		);
+	}
+
+	// The reverse: where the button goes when the popup is closed after being moved.
+	_launcherFromDock() {
+		const { width, height } = this._size();
+		const { right, bottom } = this._dock;
+		const left = window.innerWidth - right - width;
+		const top = window.innerHeight - bottom - height;
+		const corner = this._corner({ left, top, width, height });
+		return this._clamp(
+			{
+				right: corner.left ? window.innerWidth - left - LAUNCHER_SIZE : right,
+				bottom: corner.top ? window.innerHeight - top - LAUNCHER_SIZE : bottom,
+			},
+			LAUNCHER_SIZE,
+			LAUNCHER_SIZE
+		);
 	}
 
 	get fullscreen() {
@@ -66,7 +135,10 @@ class FlowPanel {
 		});
 		this._applyLayout(false);
 		document.body.appendChild(this.root);
-		window.addEventListener("resize", () => this._applyLayout(false));
+		window.addEventListener("resize", () => {
+			this._applyLayout(false);
+			this._placeLauncher();
+		});
 
 		this.app = createApp(App, {
 			onClose: () => this.hide(),
@@ -75,6 +147,7 @@ class FlowPanel {
 		this.app.mount(this.root);
 
 		this._addResizeHandle();
+		this._addMoveHandle();
 	}
 
 	// Where the window sits: a bottom-right popup sized to the viewport, or the whole viewport.
@@ -89,8 +162,9 @@ class FlowPanel {
 		const geometry = `width 0.26s ${EASE}, height 0.26s ${EASE}, right 0.26s ${EASE}, bottom 0.26s ${EASE}, border-radius 0.26s ${EASE}`;
 		const visibility = `opacity 0.18s ease, transform 0.24s ${EASE}, visibility 0s linear ${this.visible ? "0s" : "0.24s"}`;
 		style.transition = animate ? `${geometry}, ${visibility}` : visibility;
-		style.right = full ? "0" : `${EDGE}px`;
-		style.bottom = full ? "0" : `${EDGE}px`;
+		this._dock = this._clamp(this._dock, width, height);
+		style.right = full ? "0" : `${this._dock.right}px`;
+		style.bottom = full ? "0" : `${this._dock.bottom}px`;
 		style.width = full ? "100vw" : `${width}px`;
 		style.height = full ? "100vh" : `${height}px`;
 		style.borderRadius = full ? "0" : "18px";
@@ -99,6 +173,7 @@ class FlowPanel {
 			? "none"
 			: "0 24px 64px -16px rgba(16, 24, 40, 0.32), 0 4px 14px rgba(16, 24, 40, 0.08)";
 		// Hidden: sunk toward the launcher, not clickable.
+		style.transformOrigin = this._origin || "bottom right";
 		style.opacity = this.visible ? "1" : "0";
 		style.transform = this.visible ? "none" : "translateY(14px) scale(0.96)";
 		style.visibility = this.visible ? "visible" : "hidden";
@@ -121,8 +196,9 @@ class FlowPanel {
 		this.root.appendChild(handle);
 
 		const onMove = (e) => {
-			this._width = Math.min(window.innerWidth - EDGE * 2, Math.max(MIN_WIDTH, window.innerWidth - EDGE - e.clientX));
-			this._height = Math.min(window.innerHeight - EDGE * 2, Math.max(MIN_HEIGHT, window.innerHeight - EDGE - e.clientY));
+			const room = (size, min, dock, pointer) => Math.min(size - dock, Math.max(min, size - dock - pointer));
+			this._width = room(window.innerWidth, MIN_WIDTH, this._dock.right, e.clientX);
+			this._height = room(window.innerHeight, MIN_HEIGHT, this._dock.bottom, e.clientY);
 			this._applyLayout(false);
 		};
 		const onUp = () => {
@@ -140,6 +216,51 @@ class FlowPanel {
 		});
 	}
 
+	// Dragging the header moves the popup anywhere in the window; double-clicking it puts the
+	// popup back in the corner. Buttons and menus in the header keep working as clicks.
+	_addMoveHandle() {
+		this.root.addEventListener("dblclick", (e) => {
+			if (this.fullscreen || !this._onHeader(e)) return;
+			this._dock = { right: EDGE, bottom: EDGE };
+			this._launcherDock = this._launcherFromDock();
+			this._placeLauncher();
+			this._applyLayout();
+			this._persist();
+		});
+		this.root.addEventListener("mousedown", (e) => {
+			if (this.fullscreen || e.button !== 0 || !this._onHeader(e)) return;
+			e.preventDefault();
+			const start = { x: e.clientX, y: e.clientY, ...this._dock };
+			const { width, height } = this.root.getBoundingClientRect();
+			const onMove = (ev) => {
+				this._dock = this._clamp(
+					{ right: start.right - (ev.clientX - start.x), bottom: start.bottom - (ev.clientY - start.y) },
+					width,
+					height
+				);
+				this._applyLayout(false);
+			};
+			const onUp = () => {
+				document.removeEventListener("mousemove", onMove);
+				document.removeEventListener("mouseup", onUp);
+				document.body.style.userSelect = "";
+				// The button comes back where the window was left.
+				this._launcherDock = this._launcherFromDock();
+				this._placeLauncher();
+				this._persist();
+			};
+			document.body.style.userSelect = "none";
+			document.addEventListener("mousemove", onMove);
+			document.addEventListener("mouseup", onUp);
+		});
+	}
+
+	// Whether the event is on the header's empty space, not on a button, link or field in it.
+	_onHeader(e) {
+		const target = e.target instanceof Element ? e.target : null;
+		return Boolean(target?.closest(".flow-header")) && !target.closest("button, a, input, textarea, [role='menu'], [role='menuitem']");
+	}
+
 	// Chat-bubble button in the bottom-right corner of every desk page. Hidden while the panel
 	// is open.
 	_addLauncher() {
@@ -149,44 +270,81 @@ class FlowPanel {
 		button.title = __("Open Flow (Ctrl+I)");
 		button.setAttribute("aria-label", __("Open Flow"));
 		button.innerHTML = LAUNCHER_ICON;
-		// Small green "online" dot on the top-right edge.
-		const dot = document.createElement("span");
-		Object.assign(dot.style, {
-			position: "absolute",
-			top: "1px",
-			right: "1px",
-			width: "11px",
-			height: "11px",
-			borderRadius: "50%",
-			background: "#4caf7a",
-			boxShadow: "0 0 0 2px #ffffff",
-		});
-		button.appendChild(dot);
 		Object.assign(button.style, {
 			position: "fixed",
-			right: "24px",
-			bottom: "24px",
-			width: "56px",
-			height: "56px",
+			width: `${LAUNCHER_SIZE}px`,
+			height: `${LAUNCHER_SIZE}px`,
 			borderRadius: "50%",
 			border: "none",
 			display: "flex",
 			alignItems: "center",
 			justifyContent: "center",
-			background: BLUE,
+			background: LAUNCHER_BLUE,
 			color: "#ffffff",
-			boxShadow: "0 0 0 14px rgba(47, 95, 158, 0.12), 0 10px 24px -6px rgba(47, 95, 158, 0.5)",
-			cursor: "pointer",
+			boxShadow: "none",
+			cursor: "grab",
+			touchAction: "none",
 			zIndex: "1039",
 			transition: "transform 0.15s ease",
 		});
+		button.title = __("Open Flow (Ctrl+I). Drag to move.");
 		button.addEventListener("mouseenter", () => (button.style.transform = "scale(1.06)"));
 		button.addEventListener("mouseleave", () => (button.style.transform = ""));
-		button.addEventListener("click", () => this.show());
+		button.addEventListener("click", (e) => {
+			// The release that ends a drag is not a request to open the panel.
+			if (this._dragged) return (this._dragged = false);
+			this.show();
+		});
 		document.body.appendChild(button);
 		this.launcher = button;
+		this._placeLauncher();
+		this._makeLauncherDraggable(button);
 		this._syncLauncher();
 		this._peek();
+	}
+
+	_placeLauncher() {
+		if (!this.launcher) return;
+		this._launcherDock = this._clamp(this._launcherDock, LAUNCHER_SIZE, LAUNCHER_SIZE);
+		this.launcher.style.right = `${this._launcherDock.right}px`;
+		this.launcher.style.bottom = `${this._launcherDock.bottom}px`;
+	}
+
+	// Press and drag the button anywhere in the window; where it lands is remembered. A press that
+	// barely moves is still a click.
+	_makeLauncherDraggable(button) {
+		button.addEventListener("pointerdown", (e) => {
+			if (e.button !== 0) return;
+			const start = { x: e.clientX, y: e.clientY, ...this._launcherDock };
+			this._dragged = false;
+			button.setPointerCapture(e.pointerId);
+			const onMove = (ev) => {
+				const dx = ev.clientX - start.x;
+				const dy = ev.clientY - start.y;
+				if (!this._dragged && Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
+				if (!this._dragged) {
+					this._dragged = true;
+					button.style.cursor = "grabbing";
+					this.peekBubble?.remove();
+				}
+				this._launcherDock = this._clamp({ right: start.right - dx, bottom: start.bottom - dy }, LAUNCHER_SIZE, LAUNCHER_SIZE);
+				this._placeLauncher();
+			};
+			const onUp = () => {
+				button.removeEventListener("pointermove", onMove);
+				button.removeEventListener("pointerup", onUp);
+				button.removeEventListener("pointercancel", onUp);
+				button.style.cursor = "grab";
+				if (this._dragged) {
+					// Let the click that follows the release see the flag, then clear it.
+					setTimeout(() => (this._dragged = false), 0);
+					this._persist();
+				}
+			};
+			button.addEventListener("pointermove", onMove);
+			button.addEventListener("pointerup", onUp);
+			button.addEventListener("pointercancel", onUp);
+		});
 	}
 
 	// A mini chat card over the launcher on every desk page load, picking up the user's most
@@ -213,9 +371,7 @@ class FlowPanel {
 		};
 		const card = el("div", {
 			position: "fixed",
-			right: "24px",
-			bottom: "96px",
-			width: "290px",
+			width: `${PEEK_WIDTH}px`,
 			maxWidth: "calc(100vw - 48px)",
 			background: "#ffffff",
 			color: "#1f2933",
@@ -264,7 +420,8 @@ class FlowPanel {
 		foot.append(input, open);
 		card.append(head, body, foot);
 		// A small tail pointing down at the launcher.
-		card.append(el("span", { position: "absolute", right: "32px", bottom: "-6px", width: "14px", height: "14px", background: "#fbfbfa", transform: "rotate(45deg)", borderRadius: "0 0 3px 0", boxShadow: "2px 2px 3px -1px rgba(0,0,0,0.08)" }));
+		const tail = el("span", { position: "absolute", right: "32px", bottom: "-6px", width: "14px", height: "14px", background: "#fbfbfa", transform: "rotate(45deg)", borderRadius: "0 0 3px 0", boxShadow: "2px 2px 3px -1px rgba(0,0,0,0.08)" });
+		card.append(tail);
 
 		const close = () => {
 			clearTimeout(this._peekTimer);
@@ -291,11 +448,31 @@ class FlowPanel {
 		this.launcher.addEventListener("click", close);
 		this.peekBubble = card;
 		document.body.appendChild(card);
+		this._placePeek(card, tail);
 		setTimeout(() => {
 			card.style.opacity = "1";
 			card.style.transform = "";
 			arm();
 		}, 1500);
+	}
+
+	// The card sits beside the launcher wherever the user left it: above it, or below when there is
+	// no room above, and kept inside the window; its tail keeps pointing at the button.
+	_placePeek(card, tail) {
+		const { right, bottom } = this._launcherDock;
+		const gap = 16;
+		const cardRight = Math.min(Math.max(8, right), Math.max(8, window.innerWidth - PEEK_WIDTH - 8));
+		const above = bottom + LAUNCHER_SIZE + gap;
+		const fitsAbove = above + card.offsetHeight + 8 <= window.innerHeight;
+		card.style.right = `${cardRight}px`;
+		if (fitsAbove) {
+			card.style.bottom = `${above}px`;
+		} else {
+			card.style.top = `${window.innerHeight - bottom + gap}px`;
+			Object.assign(tail.style, { bottom: "auto", top: "-6px", borderRadius: "3px 0 0 0", boxShadow: "-2px -2px 3px -1px rgba(0,0,0,0.08)" });
+		}
+		const centre = right + LAUNCHER_SIZE / 2 - cardRight - 7;
+		tail.style.right = `${Math.min(Math.max(16, centre), PEEK_WIDTH - 30)}px`;
 	}
 
 	// The user's most recent chat: its last question and the reply after it, if any.
@@ -356,6 +533,8 @@ class FlowPanel {
 	}
 
 	_setVisible(visible) {
+		// Opening puts the window where the button was left, not where it was last closed.
+		if (visible && !this.visible && !this.fullscreen) this._dock = this._dockFromLauncher();
 		this.visible = visible;
 		this._applyLayout();
 		this._syncLauncher();
@@ -380,6 +559,8 @@ class FlowPanel {
 			fullscreen: this.fullscreen,
 			width: this._width,
 			height: this._height,
+			dock: this._dock,
+			launcher: this._launcherDock,
 			session: this.store.sessionName.value,
 		});
 	}

@@ -19,12 +19,24 @@
 	--flow-accent-strong: #234b80;
 	--flow-accent-ink: #ffffff;
 	--flow-shadow-lift: 0 1px 2px rgb(16 24 40 / 0.05), 0 14px 32px -14px rgb(16 24 40 / 0.22);
+	/* Conversation: the user's messages are solid navy, the assistant's sit in a pale bubble. */
+	--flow-user-bg: #30508a;
+	--flow-user-ink: #ffffff;
+	--flow-bubble-bg: #f5f7fb;
+	--flow-bubble-border: #e7ecf5;
+	--flow-avatar-bg: #edf2fb;
+	--flow-avatar-ink: #2f4f87;
 }
 [data-theme="dark"] {
 	--flow-accent: #7aa7e6;
 	--flow-accent-strong: #5f8fd4;
 	--flow-accent-ink: #0b1b33;
 	--flow-shadow-lift: 0 1px 2px rgb(0 0 0 / 0.4), 0 14px 32px -14px rgb(0 0 0 / 0.7);
+	--flow-user-bg: #3b5fa3;
+	--flow-bubble-bg: #1f232b;
+	--flow-bubble-border: #2c313b;
+	--flow-avatar-bg: #232b3b;
+	--flow-avatar-ink: #8fb2ee;
 }
 
 /* frappe-ui forces `font-family: InterVar`, a face the desk doesn't load, so it falls
@@ -61,12 +73,18 @@
 
 /* Header: quiet, with the hairline fading out toward the edges. */
 .flow-header {
+	cursor: grab; /* the header moves the window; see _addMoveHandle in main.js */
 	position: relative;
 	display: flex;
 	align-items: center;
 	gap: 8px;
 	padding: 12px;
 	background: var(--surface-white);
+}
+.flow-header button,
+.flow-header a,
+.flow-header input {
+	cursor: pointer;
 }
 .flow-header::after {
 	content: "";
@@ -149,11 +167,49 @@
 	background: linear-gradient(to bottom, transparent, var(--surface-white) 70%);
 }
 
-/* The user's message carries a trace of the accent; the assistant's reply stays unboxed. */
+/* The user's message: solid navy, right-aligned, with the small corner at the bottom right. */
 .flow-user-bubble {
-	background: color-mix(in srgb, var(--flow-accent) 9%, var(--surface-white));
-	border: 1px solid color-mix(in srgb, var(--flow-accent) 18%, var(--outline-gray-1));
-	border-radius: 14px 14px 6px 14px;
+	background: var(--flow-user-bg);
+	color: var(--flow-user-ink);
+	border-radius: 24px 24px 6px 24px;
+	box-shadow: 0 8px 16px -8px rgb(47 80 138 / 0.55);
+}
+
+/* The assistant's reply: a pale bubble beside a small avatar tile. */
+.flow-avatar {
+	display: inline-flex;
+	height: 30px;
+	width: 30px;
+	flex: none;
+	align-items: center;
+	justify-content: center;
+	border-radius: 10px;
+	background: var(--flow-avatar-bg);
+	color: var(--flow-avatar-ink);
+}
+.flow-bubble {
+	align-self: flex-start;
+	max-width: 100%;
+	padding: 10px 18px;
+	border: 1px solid var(--flow-bubble-border);
+	border-radius: 22px 22px 22px 8px;
+	background: var(--flow-bubble-bg);
+}
+
+/* "Today" between hairlines, above the first message. */
+.flow-day {
+	display: flex;
+	align-items: center;
+	gap: 14px;
+	font-size: 13px;
+	color: var(--ink-gray-5);
+}
+.flow-day::before,
+.flow-day::after {
+	content: "";
+	height: 1px;
+	flex: 1;
+	background: var(--flow-bubble-border);
 }
 
 /* Approval and question cards. */

@@ -1139,6 +1139,41 @@ class TestScopeCheck(IntegrationTestCase):
 		self.assertEqual((shown, output), ("Rain is water.", "Rain is water."))
 		self.assertEqual(len(model.calls), 2)
 
+	def test_a_record_type_of_the_site_is_pointed_out_to_the_model(self):
+		from unittest.mock import patch
+
+		# With no site vocabulary to skip the check, the record type is still pointed out to the model.
+		with patch("flow.lib.agent._site_vocabulary", return_value=[]):
+			model, _shown, _output = self._run(["IN", "Open the Customer list."], text="where can I find the customer?")
+		asked = str(model.calls[0])
+		self.assertIn("record type named Customer", asked)
+
+	def test_two_record_types_in_a_message_skip_the_check(self):
+		model, _shown, output = self._run(["An answer."], text="is it possible to assign a todo to a note?")
+		self.assertEqual((output, len(model.calls)), ("An answer.", 1))  # no IN / OUT question asked
+
+	def test_a_word_from_the_sites_business_vocabulary_skips_the_check(self):
+		from unittest.mock import patch
+
+		with patch("flow.lib.agent._site_vocabulary", return_value=["leave", "stock"]):
+			model, _shown, output = self._run(["An answer."], text="who is on leave today?")
+			self.assertEqual((output, len(model.calls)), ("An answer.", 1))  # no IN / OUT question
+			model, _shown, output = self._run(["OUT"], text="write a short poem about rain")
+			self.assertEqual(len(model.calls), 1)  # asked, and refused
+
+	def test_the_vocabulary_comes_from_the_names_of_business_record_types(self):
+		from flow.lib.agent import _site_vocabulary, _uses_site_words
+
+		words = _site_vocabulary()
+		self.assertTrue(words)
+		self.assertTrue(all(w.isalpha() and len(w) >= 4 for w in words))
+		self.assertTrue(_uses_site_words(f"tell me about {words[0]}s please"))
+		self.assertFalse(_uses_site_words("zzqx wyvv"))
+
+	def test_no_hint_when_the_message_names_no_record_type(self):
+		model, _shown, _output = self._run(["OUT"], text="write a short poem about rain")
+		self.assertNotIn("record type named", str(model.calls[0]))
+
 	def test_an_unclear_reply_counts_as_in(self):
 		model, _shown, output = self._run(["Hmm, maybe?", "An answer."])
 		self.assertEqual(output, "An answer.")
@@ -1153,3 +1188,87 @@ class TestScopeCheck(IntegrationTestCase):
 		self.addCleanup(lambda: frappe.conf.pop("flow_scope_check", None))
 		model, _shown, output = self._run(["Direct."])
 		self.assertEqual((output, len(model.calls)), ("Direct.", 1))
+
+
+class TestDocsPick(IntegrationTestCase):
+	"""The browser model chooses among the docs sections a how-to lookup found."""
+
+	OPTIONS = [{"label": "A: first", "answer": "First section.\n\nSource: u1"}, {"label": "B: second", "answer": "Second section.\n\nSource: u2"}]
+
+	def _run(self, reply, model_id="webllm/test-model"):
+		from flow.lib.agent import Agent
+
+		model = FakeModel([ChatResponse(content=reply)])
+		model.model_id = model_id
+		agent = Agent(model=model, tools=[])
+		events = []
+		gen = agent._pick_option([{"role": "user", "content": "how do I do the thing"}], {"answer": "First section.\n\nSource: u1", "options": list(self.OPTIONS)})
+		try:
+			while True:
+				events.append(next(gen))
+		except StopIteration as stop:
+			return model, stop.value, events
+
+	def test_the_chosen_section_is_the_answer(self):
+		model, result, _events = self._run("2")
+		self.assertEqual(result["answer"], "Second section.\n\nSource: u2")
+		self.assertNotIn("options", result)
+		self.assertEqual(len(model.calls), 1)
+
+	def test_zero_says_the_docs_have_nothing(self):
+		from flow.tools.web import NOT_IN_DOCS
+
+		self.assertEqual(self._run("0")[1]["answer"], NOT_IN_DOCS)
+
+	def test_an_unclear_reply_keeps_the_best_match(self):
+		for reply in ("hmm", "7", ""):
+			self.assertEqual(self._run(reply)[1]["answer"], "First section.\n\nSource: u1", reply)
+
+	def test_server_models_are_not_asked(self):
+		model, result, _events = self._run("2", model_id="gpt-test")
+		self.assertEqual((result["answer"], len(model.calls)), ("First section.\n\nSource: u1", 0))
+
+
+class TestApprovedWritesAreCommitted(IntegrationTestCase):
+	"""A write the user approved is committed before the model replies, not when the stream ends."""
+
+	def _agent(self):
+		from flow.lib.agent import Agent
+		from flow.lib.tool import tool
+
+		@tool(requires_confirmation=True)
+		def save_thing(fail: bool = False) -> dict:
+			"""Save a thing."""
+			if fail:
+				raise ValueError("nope")
+			return {"saved": True}
+
+		@tool
+		def read_thing() -> dict:
+			"""Read a thing."""
+			return {"ok": True}
+
+		return Agent(model=FakeModel([]), tools=[save_thing, read_thing])
+
+	def _commits(self, name, arguments):
+		from unittest.mock import patch
+
+		from flow.lib.agent import ToolCall
+
+		agent = self._agent()
+		frappe.flags.in_test = False  # the commit is skipped under test; patched out below
+		try:
+			with patch("frappe.db.commit") as commit:
+				agent._run_tool(ToolCall(id="c1", name=name, arguments=arguments))
+		finally:
+			frappe.flags.in_test = True
+		return commit.call_count
+
+	def test_a_write_tool_commits_once_it_has_saved(self):
+		self.assertEqual(self._commits("save_thing", {}), 1)
+
+	def test_a_failed_write_commits_nothing(self):
+		self.assertEqual(self._commits("save_thing", {"fail": True}), 0)
+
+	def test_a_read_commits_nothing(self):
+		self.assertEqual(self._commits("read_thing", {}), 0)

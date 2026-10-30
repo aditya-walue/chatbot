@@ -861,3 +861,20 @@ class TestMemoryRunProvenance(IntegrationTestCase):
 			with self.assertRaises(RuntimeError):
 				start_run("go", agent=self.agent.name)
 		self.assertIsNone(frappe.flags.get("flow_run"))
+
+
+class TestRecoverSessionDeadlock(IntegrationTestCase):
+	def test_a_deadlock_is_retried_once_without_a_rollback(self):
+		from unittest.mock import MagicMock
+
+		with (
+			patch("frappe.get_doc", return_value=MagicMock(name="session")),
+			patch("flow.lib.session._assert_session_owner"),
+			patch("frappe.get_all", return_value=["run-1"]),
+			patch("frappe.db.set_value", side_effect=[frappe.QueryDeadlockError(), None]) as set_value,
+			patch("frappe.db.rollback") as rollback,
+		):
+			result = recover_session("some-session")
+		self.assertEqual(result, {"recovered": 1})
+		self.assertEqual(set_value.call_count, 2)
+		rollback.assert_not_called()

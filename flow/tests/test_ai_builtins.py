@@ -774,3 +774,29 @@ class TestCreateByName(IntegrationTestCase):
 			# A command with details is a write for the approval card, however Laya classifies it.
 			self.assertIsNone(_laya_creation_steps(text))
 		self.assertEqual(_laya_creation_steps("how do I create a todo"), {"doctype": "ToDo"})
+
+
+class TestPrechecksCatchWhatTheToolWouldReport(IntegrationTestCase):
+	def test_create_names_an_unknown_doctype_first(self):
+		from flow.tools.builtins import _precheck_create
+
+		error = _precheck_create({"doctype": "No Such Doctype", "records": [{"title": "x"}]})
+		self.assertIn("is not a DocType on this site", error)
+
+	def test_read_names_an_unknown_field(self):
+		from flow.tools.builtins import _precheck_query
+
+		error = _precheck_query({"doctype": "ToDo", "fields": ["status", "no_such_field"]})
+		self.assertIn("'no_such_field'", error)
+		self.assertNotIn("'status'", error)
+
+	def test_read_accepts_the_parent_columns_of_a_child_table(self):
+		from flow.tools.builtins import _precheck_query
+
+		self.assertIsNone(_precheck_query({"doctype": "Has Role", "fields": ["parent", "parenttype", "role"]}))
+
+	def test_read_leaves_real_fields_standard_columns_and_expressions_alone(self):
+		from flow.tools.builtins import _precheck_query
+
+		for fields in (["status", "name", "creation"], ["_assign", "_comments"], ["count(name) as total"], ["*"], None):
+			self.assertIsNone(_precheck_query({"doctype": "ToDo", "fields": fields}), fields)

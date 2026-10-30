@@ -9,6 +9,7 @@ from urllib.parse import quote
 from typing import Annotated, Any, Literal
 
 import frappe
+from frappe.model import child_table_fields, default_fields, optional_fields
 from frappe import _
 
 from flow.lib.tool import LayaRoute, LayaSignals, Tool, tool
@@ -193,7 +194,12 @@ def _precheck_query(args: dict[str, Any]) -> str | None:
 	import difflib
 
 	doctype, filters = args.get("doctype"), args.get("filters")
-	if not doctype or not frappe.db.exists("DocType", doctype) or not isinstance(filters, dict):
+	if not doctype or not frappe.db.exists("DocType", doctype):
+		return None
+	unknown_fields = _unknown_columns(doctype, args.get("fields"))
+	if unknown_fields:
+		return unknown_fields
+	if not isinstance(filters, dict):
 		return None
 	for option in QUERY_OPTIONS:
 		if option in filters:
@@ -230,6 +236,31 @@ def _precheck_query(args: dict[str, Any]) -> str | None:
 			'like {"status": "Paid"}; put order_by, fields and limit beside it.' + hint
 		)
 	return None
+
+
+# Columns Frappe adds to every record or child row (parent, _assign, _comments, ...): valid in `fields`.
+DOCUMENT_COLUMNS = frozenset(default_fields) | frozenset(child_table_fields) | frozenset(optional_fields)
+
+
+def _unknown_columns(doctype: str, fields: Any) -> str | None:
+	"""An error naming the plain column names in `fields` that are not fields of the DocType, with
+	the closest real ones; expressions ("sum(total)", "*", "name as id") are left to Frappe."""
+	import difflib
+
+	if not isinstance(fields, list):
+		return None
+	meta = frappe.get_meta(doctype)
+	names = [f.fieldname for f in meta.fields if f.fieldtype not in LAYOUT_FIELDTYPES]
+	unknown = [
+		f for f in fields if isinstance(f, str) and f.isidentifier() and not (meta.has_field(f) or f in STANDARD_COLUMNS or f in DOCUMENT_COLUMNS)
+	]
+	if not unknown:
+		return None
+	parts = []
+	for name in unknown:
+		close = difflib.get_close_matches(name.lower(), names, n=3, cutoff=0.5)
+		parts.append(repr(name) + (f" (did you mean {', '.join(close)}?)" if close else ""))
+	return f"Not fields of {doctype}: {', '.join(parts)}. describe() the DocType for its fieldnames."
 
 
 def _select_field_for_value(meta: Any, value: Any) -> str | None:
@@ -413,10 +444,7 @@ def creation_steps(doctype: DocTypeArg) -> dict[str, Any]:
 		steps.append(f"Move it through the **{workflow}** workflow using the **Actions** button.")
 
 	numbered = "\n".join(f"{i}. {step}" for i, step in enumerate(steps, 1))
-	answer = (
-		f"**How to create a new {doctype}**\n\n{numbered}\n\n"
-		"All other fields are optional."
-	)
+	answer = f"{numbered}\n\nAll other fields are optional."
 	return {"doctype": doctype, "answer": answer}
 
 
@@ -1144,6 +1172,9 @@ def _apply_action(doctype: str, name: str, action: str, args: dict[str, Any]) ->
 
 
 def _precheck_create(args: dict[str, Any], context: str | None = None) -> str | None:
+	doctype = args.get("doctype")
+	if isinstance(doctype, str) and doctype and not frappe.db.exists("DocType", doctype):
+		return f"{doctype!r} is not a DocType on this site. Use find_doctypes for the exact name."
 	# A single object plainly means one record — small models often drop the list brackets.
 	# Normalised in place so the approval card and the call itself both see a list.
 	if isinstance(args.get("records"), dict):
@@ -1792,6 +1823,7 @@ from flow.tools.answers import (  # noqa: E402
 	role_permissions,
 	show_records,
 	status_steps,
+	where_to_find,
 )
 from flow.tools.diagnosis import error_diagnosis  # noqa: E402
 from flow.tools.web import docs_howto, frappe_docs, web_search  # noqa: E402
@@ -1803,9 +1835,10 @@ BUILTIN_TOOLS: list[Tool] = [
 	required_values,
 	small_talk,
 	error_diagnosis,
-	show_records,
+	where_to_find,
 	explain_doctype,
 	document_flow,
+	show_records,
 	assignment_steps,
 	status_steps,
 	role_permissions,

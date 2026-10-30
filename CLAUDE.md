@@ -14,7 +14,7 @@ The loop picks who answers, first match wins:
    pasted errors). Run the tool directly; no model call. DocType names are typo-tolerant.
 2. **Laya** (optional) — `flow/lib/laya_router.py` classifies intent; at confidence ≥
    `flow_laya_threshold` (0.85) it may route to a **read-only** tool, else falls through. A HOWTO that no site tool
-   takes goes to `docs_howto`: the part of the docs.frappe.io page that fits the question, answered as-is.
+   takes goes to `docs_howto`: the part of the docs.frappe.io page that fits the question, answered as-is (a browser model picks among the best-matching sections, or says none fits).
    Every decision → `Flow Route Log`.
 3. **Qwen** — server yields a `BrowserRequest` over the SSE stream; the panel runs WebLLM and posts
    the reply to `submit_browser_reply`; `flow/lib/webllm.py` parses it.
@@ -69,7 +69,7 @@ test_ai_assistant test_session test_ai_triggers test_ai_model test_knowledge tes
   messages and tool results, so `flow_opik_capture_content` false sends metadata only.
 - **Frappe loggers drop INFO by default**; `flow.laya` sets its own level explicitly.
 - **Site config switches**: `flow_laya_enabled`, `flow_laya_threshold`, `flow_laya_model_path`, `flow_laya_backend`, `flow_laya_cache_dir`, `flow_hf_token`,
-  `flow_webllm_strict_json` (default on), `flow_webllm_compact_context` (default on), `flow_scope_check` (default on), `flow_web_search_domains`,
+  `flow_webllm_strict_json` (default on), `flow_webllm_compact_context` (default on), `flow_scope_check` (default on), `flow_docs_pick` (default on), `flow_web_search_domains`,
   `flow_opik_enabled`, `flow_opik_project`, `flow_opik_url`, `flow_opik_api_key`, `flow_opik_workspace`, `flow_opik_capture_content`.
 
 ## Rules for changes

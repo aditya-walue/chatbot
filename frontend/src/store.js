@@ -26,6 +26,8 @@ const toolApprovalCache = {};
 const selectedAgent = ref(null);
 const selectedModel = ref(null);
 const sessionName = ref(null);
+// When the open chat began (a reopened chat's creation time); null for one started now.
+const threadStart = ref(null);
 const runName = ref(null);
 
 const messages = ref([]);
@@ -181,6 +183,7 @@ function setModel(name) {
 function newChat() {
 	if (sending.value) return;
 	sessionName.value = null;
+	threadStart.value = null;
 	runName.value = null;
 	// A reopened older chat may have used another agent/model; new chats return to the default.
 	const preset = agents.value.find((x) => x.name === frappe.boot.flow_default_agent);
@@ -252,6 +255,7 @@ async function switchSession(name) {
 		newChat();
 		return;
 	}
+	threadStart.value = doc.creation || null;
 	selectedAgent.value = doc.agent;
 	selectedModel.value = doc.model || null;
 	await loadToolApproval(doc.agent);
@@ -658,6 +662,7 @@ export function useStore() {
 		agents,
 		models,
 		recentSessions,
+		threadStart,
 		selectedAgent,
 		selectedModel,
 		sessionName,

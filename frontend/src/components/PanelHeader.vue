@@ -1,5 +1,4 @@
 <script setup>
-import BrandMark from "./BrandMark.vue";
 import SessionsMenu from "./SessionsMenu.vue";
 import { FeatherIcon } from "@/lib/ui";
 import { useStore } from "@/store";
@@ -14,7 +13,6 @@ const site = frappe?.boot?.sysdefaults?.company || window.location.hostname;
 
 <template>
 	<header class="flow-header">
-		<BrandMark :size="40" />
 		<div class="ml-1 flex min-w-0 flex-col leading-tight">
 			<span class="text-[17px] font-semibold tracking-tight text-ink-gray-9">{{
 				__("Flow")

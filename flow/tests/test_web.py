@@ -63,6 +63,13 @@ class TestWebSearch(IntegrationTestCase):
 		self.assertFalse(_is_web_source("https://wiki.example.org/blog"))
 		self.assertFalse(_is_web_source("https://docs.frappe.io/page"))
 
+	def test_an_empty_topic_is_an_error_not_a_search(self):
+		from flow.tools.web import docs_howto
+
+		for topic in ("", "   ", None, "123 456"):
+			with self.assertRaises(ValueError, msg=repr(topic)):
+				docs_howto.func(topic=topic)
+
 	def test_can_be_turned_off(self):
 		from flow.tools.web import web_search
 
@@ -160,6 +167,55 @@ class TestPreferredApps(IntegrationTestCase):
 			urls = [p["url"].split(".io/")[1] for p in _docs_search("convert lead to deal")]
 		self.assertEqual(urls, ["erpnext/lead", "crm/leads"])
 
+	def test_a_question_is_searched_without_its_opening_words_and_record_types(self):
+		from flow.tools.web import _candidate_pages
+
+		def fetch(query):
+			# The docs search wants every word on a page: only the short query finds anything.
+			return [{"title": "Task Guide", "route": "erpnext/task-guide", "content": ""}] if query == "import from file" else []
+
+		with (
+			patch("flow.tools.web._fetch_docs", side_effect=fetch),
+			patch("flow.tools.web._installed_app_words", return_value={"erpnext"}),
+			patch("flow.tools.web._preferred_apps", return_value=[]),
+			patch("flow.tools.web._doctype_words", return_value={"customers"}),
+			patch("flow.tools.web._doctype_queries", return_value=[]),
+		):
+			pages = _candidate_pages("how do i import customers from file")
+		self.assertEqual([p["url"].split(".io/")[1] for p in pages], ["erpnext/task-guide"])
+
+	def test_a_one_word_topic_is_searched_as_it_is(self):
+		from flow.tools.web import _candidate_pages
+
+		with (
+			patch("flow.tools.web._fetch_docs", return_value=[{"title": "Billing", "route": "erpnext/billing", "content": ""}]) as fetch,
+			patch("flow.tools.web._installed_app_words", return_value={"erpnext"}),
+			patch("flow.tools.web._preferred_apps", return_value=[]),
+			patch("flow.tools.web._doctype_words", return_value=set()),
+			patch("flow.tools.web._doctype_queries", return_value=[]),
+		):
+			pages = _candidate_pages("billing")
+		fetch.assert_called_once_with("billing")
+		self.assertEqual(pages[0]["title"], "Billing")
+
+	def test_the_page_titled_like_a_doctype_of_the_topic_is_read_first(self):
+		from flow.tools.web import _candidate_pages
+
+		def fetch(query):
+			title = "Probe Import" if query == "Probe Import" else "Other"
+			return [{"title": title, "route": f"erpnext/{title.lower().replace(' ', '-')}", "content": ""}]
+
+		with (
+			patch("flow.tools.web._fetch_docs", side_effect=fetch),
+			patch("flow.tools.web._installed_app_words", return_value={"erpnext"}),
+			patch("flow.tools.web._preferred_apps", return_value=[]),
+			patch("flow.tools.web._doctype_words", return_value=set()),
+			patch("flow.tools.web._doctype_queries", return_value=["Probe Import"]),
+		):
+			pages = _candidate_pages("how to import things")
+		self.assertEqual(pages[0]["title"], "Probe Import")
+		self.assertTrue(pages[0]["named"])
+
 	def test_preferred_apps_come_from_the_doctypes_that_hold_records(self):
 		from flow.tools.web import _preferred_apps
 
@@ -167,7 +223,7 @@ class TestPreferredApps(IntegrationTestCase):
 		counts = {"Alpha Thing": 0, "Beta Thing": 7}
 		with (
 			patch("frappe.get_all", side_effect=lambda dt, **k: doctypes if dt == "DocType" else [("Mod A", "app_a"), ("Mod B", "app_b")]),
-			patch("frappe.db.count", side_effect=lambda dt: counts[dt]),
+			patch("flow.tools.web._record_count", side_effect=lambda dt: counts[dt]),
 			patch("frappe.get_hooks", return_value=[]),
 		):
 			self.assertEqual(_preferred_apps("create a thing"), [{"app_b"}])
@@ -253,7 +309,33 @@ class TestDocsHowto(IntegrationTestCase):
 		self.assertIn("Source: https://docs.frappe.io/app/widgets", answer)
 		self.assertNotIn("Open the form and save.", answer)
 		self.assertNotIn("shot.png", answer)  # image links don't load in a chat
-		self.assertIn("(https://docs.frappe.io/app/intro)", answer)
+		self.assertNotIn("Related pages", answer)  # only the answer and its source
+		self.assertNotIn("app/intro", answer)
+
+	def test_the_best_sections_are_offered_for_a_model_to_choose_from(self):
+		with patch("requests.get", side_effect=self._get), patch("flow.tools.web._installed_app_words", return_value={"app"}):
+			from flow.tools.web import docs_howto
+
+			result = docs_howto.func(topic="making a widget")
+		self.assertTrue(result["answer"].startswith("Open the form and save."))  # the best match stays the answer
+		self.assertEqual(result["options"][0]["answer"], result["answer"])
+		self.assertIn("Widgets > Making a widget: Open the form and save.", result["options"][0]["label"])
+		self.assertGreater(len(result["options"]), 1)
+
+	def test_a_section_is_offered_once(self):
+		with patch("requests.get", side_effect=self._get), patch("flow.tools.web._installed_app_words", return_value={"app"}):
+			from flow.tools.web import docs_howto
+
+			result = docs_howto.func(topic="making a widget")
+		labels = [o["label"] for o in result["options"]]
+		self.assertEqual(len(labels), len(set(labels)))
+
+	def test_a_single_section_is_still_offered_so_a_model_can_say_it_does_not_answer(self):
+		with patch("requests.get", side_effect=self._get), patch("flow.tools.web._installed_app_words", return_value={"app"}):
+			from flow.tools.web import docs_howto
+
+			result = docs_howto.func(topic="convert widget gadget")
+		self.assertEqual(len(result["options"]), 1)
 
 	def test_a_page_deeper_in_the_results_wins_when_its_section_fits_better(self):
 		from flow.tools.web import pick_section
