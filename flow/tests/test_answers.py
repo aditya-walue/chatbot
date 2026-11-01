@@ -52,6 +52,16 @@ class TestAnswerRoutes(IntegrationTestCase):
 		listed = show_records(doctype="ToDo", filters={"status": "Open"})["answer"]
 		self.assertIn("ToDo record", listed)
 
+	def test_a_record_type_inside_a_longer_phrase_lists_it_and_says_what_was_not_used(self):
+		self.assertEqual(
+			_route_show_records("is there any todo that is added"), {"doctype": "ToDo", "unapplied": "that is added"}
+		)
+		# Too many words left over to be filler: left to the model.
+		self.assertIsNone(_route_show_records("are there any todo items with a long list of other conditions"))
+		listed = show_records(doctype="ToDo", unapplied="that is added")["answer"]
+		self.assertTrue(listed.endswith('Not used as a filter: "that is added".'))
+		self.assertNotIn("Not used as a filter", show_records(doctype="ToDo")["answer"])
+
 	def test_where_to_find_points_to_the_list_and_new_form_from_frappes_own_links(self):
 		from urllib.parse import urlparse
 

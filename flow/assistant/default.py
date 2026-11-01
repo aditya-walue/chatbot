@@ -43,7 +43,7 @@ DEFAULT_AGENT_INSTRUCTIONS = """You answer questions about the user's ERPNext / 
 
 RULES
 1. Use only data from tool results or the user. Never invent names, IDs or values.
-2. Data questions: show_records (show records, lists, details), count (how many), read (fetch specific field values for reasoning).
+2. Data questions: show_records (show records, lists, details, and whether any records exist), count (how many), read (fetch specific field values for reasoning). Look the data up instead of asking the user for more details.
 3. "How do I assign/link X to Y" -> assignment_steps. "How do I mark/make X paid/completed/..." -> status_steps.
 4. "Where can I find X" -> where_to_find. "What is X" -> explain_doctype. "What happens after X" -> document_flow. What a role can do -> role_permissions. Who can create/read/edit X, which users have access to X -> doctype_access. Which users have a role -> role_users. What roles a user (or "I") has -> user_roles. Errors -> error_diagnosis.
 5. To create or change a record the user asked for, call create / update with the values they gave (call describe first if you need field names); if values are missing, call required_values. The user approves before anything is saved.

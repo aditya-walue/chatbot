@@ -46,6 +46,8 @@ def _builtins():
 
 LIST_LIMIT = 20
 MAX_WORKSPACES = 3
+MAX_RECORD_TYPE_WORDS = 4  # words of a record type's name
+MAX_UNAPPLIED_WORDS = 3  # leftover words of a list request that may be passed over
 # The most records one list shows, whatever limit is asked for.
 LIST_ALL_LIMIT = 200
 MAIN_FIELDS_LIMIT = 6
@@ -148,12 +150,26 @@ def _doctypes_for_series(record_id: str) -> list[str]:
 def _list_arguments(rest: str, order: str | None) -> dict[str, Any] | None:
 	"""Arguments for a list request: the DocType, plus a status filter when a word in the request
 	is one of its status values ("open todos", "unpaid customer invoices")."""
-	arguments = list_target(rest)
+	arguments = list_target(rest) or _embedded_target(rest)
 	if not arguments:
 		return None
 	if order in ("oldest",):
 		arguments["order_by"] = "creation asc"
 	return arguments
+
+
+def _embedded_target(phrase: str) -> dict[str, Any] | None:
+	"""A record type followed by a few more words ("holiday list that is added"): the list of it,
+	with the trailing words handed on as `unapplied`, so the answer says plainly what was not used
+	as a filter. Words before the record type ("broken invoices", "is a todo") are qualifiers and
+	stay with the model, and so does a long tail, which is no filler."""
+	words = (phrase or "").strip().split()
+	for size in range(min(MAX_RECORD_TYPE_WORDS, len(words)), 0, -1):
+		tail = words[size:]
+		doctype = _record_type(words[:size])
+		if doctype and len(tail) <= MAX_UNAPPLIED_WORDS:
+			return {"doctype": doctype, "unapplied": " ".join(tail)} if tail else {"doctype": doctype}
+	return None
 
 
 def list_target(phrase: str, scope: set[str] | None = None) -> dict[str, Any] | None:
@@ -348,9 +364,11 @@ def show_records(
 	about: Annotated[list[str] | None, 'Fieldnames the user asked about for one record, e.g. ["total_taxes_and_charges", "taxes"].'] = None,
 	limit: Annotated[int | None, f"How many records to list, up to {LIST_ALL_LIMIT}. Default 20; when the user wants all of them, pass the total count."] = None,
 	start: Annotated[int, "Offset for pagination (number of records to skip). Default 0."] = 0,
+	unapplied: Annotated[str | None, "Words of the request that could not be used as a filter; the answer says so."] = None,
 ) -> dict[str, Any]:
 	"""Show records to the user: one by ID (plus the fields asked about) or a recent or filtered
-	list. Use for show, view, list and "what is the <field> of <record>"."""
+	list. Use for show, view, list, "is there any <record type>" and "what is the <field> of
+	<record>"."""
 	if not frappe.has_permission(doctype, "read"):
 		raise PermissionError(f"No permission to read {doctype}")
 	route = doctype.lower().replace(" ", "-")
@@ -377,9 +395,10 @@ def show_records(
 	meta = frappe.get_meta(doctype)
 	labels = {c: (meta.get_field(c).label if meta.get_field(c) else c.replace("_", " ").title()) for c in columns}
 
+	passed_over = f"\n\nNot used as a filter: \"{unapplied}\"." if unapplied else ""
 	if not rows:
 		what = f"{doctype} {', '.join(names)}" if names else f"{doctype} records" + (" matching that" if filters else "")
-		return {"answer": f"No {what} found (or you don't have access to them).", "doctype": doctype}
+		return {"answer": f"No {what} found (or you don't have access to them).{passed_over}", "doctype": doctype}
 
 	if len(rows) == 1 and names:
 		row = rows[0]
@@ -413,7 +432,7 @@ def show_records(
 	else:
 		more = ""
 	return {
-		"answer": f"{title}:\n\n{header}\n{sep}\n" + "\n".join(body) + more,
+		"answer": f"{title}:\n\n{header}\n{sep}\n" + "\n".join(body) + more + passed_over,
 		"doctype": doctype,
 		"names": [r.name for r in rows],
 	}

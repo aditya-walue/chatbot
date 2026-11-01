@@ -610,7 +610,10 @@ class Agent:
 		users = [str(m.get("content") or "") for m in messages if m.get("role") == "user" and isinstance(m.get("content"), str)]
 		if not users:
 			return False
+		# A short follow-up ("In this site") is only clear beside what came before it.
+		replies = [str(m.get("content") or "") for m in messages if m.get("role") == "assistant" and isinstance(m.get("content"), str) and m.get("content")]
 		earlier = f"Earlier message: {users[-2][:200]}\n" if len(users) > 1 else ""
+		earlier += f"Earlier reply: {replies[-1][:200]}\n" if replies and len(users) > 1 else ""
 		# A record type of this site named in the message ("where can I find the customer?") says
 		# it is about the site, which a 3B model does not always see from the words alone.
 		named = _named_doctypes(users[-1])

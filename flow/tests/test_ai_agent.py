@@ -1170,6 +1170,22 @@ class TestScopeCheck(IntegrationTestCase):
 		self.assertTrue(_uses_site_words(f"tell me about {words[0]}s please"))
 		self.assertFalse(_uses_site_words("zzqx wyvv"))
 
+	def test_a_follow_up_is_checked_beside_the_earlier_exchange(self):
+		from flow.lib.agent import Agent
+		from flow.lib.agent import TextChunk  # noqa: F401
+
+		model = FakeModel([ChatResponse(content="IN"), ChatResponse(content="An answer.")])
+		model.model_id = "webllm/test-model"
+		messages = [
+			{"role": "user", "content": "a question about the site"},
+			{"role": "assistant", "content": "Which site do you mean?"},
+			{"role": "user", "content": "In this site"},
+		]
+		list(Agent(model=model, tools=[]).run(messages, stream=True))
+		asked = str(model.calls[0])
+		self.assertIn("Earlier reply: Which site do you mean?", asked)
+		self.assertIn("Earlier message: a question about the site", asked)
+
 	def test_no_hint_when_the_message_names_no_record_type(self):
 		model, _shown, _output = self._run(["OUT"], text="write a short poem about rain")
 		self.assertNotIn("record type named", str(model.calls[0]))
