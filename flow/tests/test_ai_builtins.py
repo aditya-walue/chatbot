@@ -800,3 +800,34 @@ class TestPrechecksCatchWhatTheToolWouldReport(IntegrationTestCase):
 
 		for fields in (["status", "name", "creation"], ["_assign", "_comments"], ["count(name) as total"], ["*"], None):
 			self.assertIsNone(_precheck_query({"doctype": "ToDo", "fields": fields}), fields)
+
+
+class TestDidYouMean(IntegrationTestCase):
+	NAMES = ["item_code", "item_group", "to_rename", "warehouse", "actual_qty", "stock_uom"]
+
+	def test_a_name_that_shares_a_word_is_suggested(self):
+		from flow.tools.builtins import _similar_names
+
+		self.assertEqual(_similar_names("item_name", self.NAMES), ["item_code"])
+		self.assertEqual(_similar_names("Item Name", self.NAMES), ["item_code"])
+
+	def test_a_near_miss_in_spelling_is_suggested(self):
+		from flow.tools.builtins import _similar_names
+
+		self.assertEqual(_similar_names("warehous", self.NAMES), ["warehouse"])
+		self.assertEqual(_similar_names("actual_qtty", self.NAMES), ["actual_qty"])
+
+	def test_a_loose_match_is_not_suggested(self):
+		from flow.tools.builtins import _did_you_mean, _similar_names
+
+		self.assertNotIn("to_rename", _similar_names("item_name", self.NAMES))
+		self.assertEqual(_did_you_mean("reserved_qty_xyz", ["to_rename", "warehouse"]), "")
+		self.assertEqual(_did_you_mean("item_name", self.NAMES), " (did you mean item_code?)")
+
+	def test_the_read_error_names_only_useful_suggestions(self):
+		from flow.tools.builtins import _precheck_query
+
+		error = _precheck_query({"doctype": "ToDo", "fields": ["descriptionn", "zzqx"]})
+		self.assertIn("'descriptionn' (did you mean description?)", error)
+		self.assertIn("'zzqx'", error)
+		self.assertNotIn("'zzqx' (did you mean", error)

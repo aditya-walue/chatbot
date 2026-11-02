@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import difflib
 import json
 import re
 from urllib.parse import quote
@@ -219,8 +220,7 @@ def _precheck_query(args: dict[str, Any]) -> str | None:
 		fieldname = fieldname or _select_field_for_value(meta, condition)
 		if not fieldname:
 			names = [f.fieldname for f in meta.fields if f.fieldtype not in LAYOUT_FIELDTYPES]
-			close = difflib.get_close_matches(str(key).lower(), names, n=3, cutoff=0.5)
-			unknown.append(f"{key!r}" + (f" (did you mean {', '.join(close)}?)" if close else ""))
+			unknown.append(f"{key!r}" + _did_you_mean(key, names))
 			continue
 		tidy[fieldname] = _normalize_condition(condition)
 	args["filters"] = tidy
@@ -236,6 +236,28 @@ def _precheck_query(args: dict[str, Any]) -> str | None:
 			'like {"status": "Paid"}; put order_by, fields and limit beside it.' + hint
 		)
 	return None
+
+
+MIN_SHARED_WORD = 3  # letters a word of a name must have to count as shared with another name
+
+
+def _similar_names(name: Any, names: list[str]) -> list[str]:
+	"""Fieldnames that look like `name`: they share a word with it ("item_name" and "item_code"
+	share "item") or are spelt almost the same. Looser matches ("to_rename" for "item_name") are
+	only noise, so they are left out."""
+	key = str(name).lower().replace(" ", "_")
+	words = {w for w in key.split("_") if len(w) >= MIN_SHARED_WORD}
+	close = difflib.get_close_matches(key, names, n=3, cutoff=0.6)
+	return [
+		c for c in close
+		if words & {w for w in c.split("_") if len(w) >= MIN_SHARED_WORD}
+		or difflib.SequenceMatcher(None, key, c).ratio() >= 0.8
+	]
+
+
+def _did_you_mean(name: Any, names: list[str]) -> str:
+	close = _similar_names(name, names)
+	return f" (did you mean {', '.join(close)}?)" if close else ""
 
 
 # Columns Frappe adds to every record or child row (parent, _assign, _comments, ...): valid in `fields`.
@@ -258,8 +280,7 @@ def _unknown_columns(doctype: str, fields: Any) -> str | None:
 		return None
 	parts = []
 	for name in unknown:
-		close = difflib.get_close_matches(name.lower(), names, n=3, cutoff=0.5)
-		parts.append(repr(name) + (f" (did you mean {', '.join(close)}?)" if close else ""))
+		parts.append(repr(name) + _did_you_mean(name, names))
 	return f"Not fields of {doctype}: {', '.join(parts)}. describe() the DocType for its fieldnames."
 
 
@@ -1304,8 +1325,7 @@ def _unknown_in(doctype: str, values: dict[str, Any]) -> list[str]:
 			# Fields that fit the value come first: an email address under "user_name" is meant
 			# for User's Email, not Username.
 			fits = [f.fieldname for f in meta.fields if _value_fits(f, value)]
-			close = difflib.get_close_matches(str(key).lower(), names, n=3, cutoff=0.5)
-			close = list(dict.fromkeys(fits[:2] + close))[:3]
+			close = list(dict.fromkeys(fits[:2] + _similar_names(key, names)))[:3]
 			hint = f" (did you mean {', '.join(close)}?)" if close else ""
 			problems.append(f"{key!r} is not a field of {doctype}{hint}")
 		elif field.fieldtype in ("Table", "Table MultiSelect") and isinstance(value, list):
