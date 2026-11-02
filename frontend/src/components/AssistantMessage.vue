@@ -4,7 +4,6 @@ import MarkdownText from "./MarkdownText.vue";
 import ActivityGroup from "./ActivityGroup.vue";
 import ConfirmCard from "./ConfirmCard.vue";
 import WorkingIndicator from "./WorkingIndicator.vue";
-import { toolError } from "@/lib/toolMeta";
 import { useStore } from "@/store";
 
 const props = defineProps({ message: { type: Object, required: true } });
@@ -27,9 +26,10 @@ const items = computed(() => {
 			out.push({ kind: "text", id: part.id, part });
 			continue;
 		}
-		// Steps behind the answer ("Finding relevant DocTypes", "Replying") are not shown; a failed
-		// one stays, since with no answer text after it the failure is all the user sees.
-		if (!isApproval(part) && !toolError(part.result)) continue;
+		// Steps behind the answer ("Finding relevant DocTypes", "Replying") are never shown, failed
+		// ones included: the server puts what went wrong into the reply text. Only a write that
+		// waits for approval is a card.
+		if (!isApproval(part)) continue;
 		if (isApproval(part)) {
 			const q = questionByKey.value.get(part.id);
 			if (q && q._answer === undefined)

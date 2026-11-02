@@ -370,7 +370,8 @@ def show_records(
 ) -> dict[str, Any]:
 	"""Show records to the user: one by ID (plus the fields asked about) or a recent or filtered
 	list. Use for show, view, list, "is there any <record type>" and "what is the <field> of
-	<record>"."""
+	<record>". Not for how much stock an item has or which items are low (that is low_stock):
+	"stock" in such a question is a quantity, not the Stock Entry record type."""
 	if not frappe.has_permission(doctype, "read"):
 		raise PermissionError(f"No permission to read {doctype}")
 	route = doctype.lower().replace(" ", "-")
@@ -558,7 +559,9 @@ def low_stock(
 	limit: Annotated[int, "Most rows to show."] = LIST_LIMIT,
 ) -> dict[str, Any]:
 	"""Items whose stock is at or below their reorder level, per warehouse. Use for "which items
-	are low in stock", "what needs reordering", "running out of stock". Changes nothing."""
+	are low in stock", "which item is low in stocks", "what needs reordering", "running out of
+	stock". Answers from reorder levels and bin quantities, not from Stock Entry records. Changes
+	nothing."""
 	for doctype in ("Item", "Bin"):
 		if not frappe.db.exists("DocType", doctype):
 			raise ValueError("Stock isn't set up on this site.")
