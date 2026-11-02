@@ -55,20 +55,56 @@ def find_doctypes(
 	module: Annotated[str | None, "Module; usually omit."] = None,
 	limit: Annotated[int, "Max results."] = 40,
 ) -> list[dict]:
-	"""Find a DocType's (record type's) exact name by keyword. Returns types, not records."""
+	"""Find a DocType's (record type's) exact name by keyword, the best match first. Returns types,
+	not records."""
 	limit = min(max(int(limit), 1), MAX_READ_LIMIT)
 	filters: dict[str, Any] = {"istable": 0}
 	if module:
 		filters["module"] = module
 	if search:
 		filters["name"] = ["like", f"%{search}%"]
-	rows = frappe.get_all("DocType", filters=filters, fields=["name", "module"], order_by="name", limit=limit)
+	fields = ["name", "module", "issingle"]
+	# Ranked in memory, so enough rows are read for the best matches to be among them.
+	rows = frappe.get_all("DocType", filters=filters, fields=fields, order_by="name", limit=FIND_DOCTYPES_READ if search else limit)
 	if not rows and module and search:
 		# Models often guess the module wrong (Sales Order under "Stock"); an empty result then
 		# reads as "doesn't exist". The name match alone is the stronger signal.
 		del filters["module"]
-		rows = frappe.get_all("DocType", filters=filters, fields=["name", "module"], order_by="name", limit=limit)
-	return [r for r in rows if frappe.has_permission(r["name"], "read")]
+		rows = frappe.get_all("DocType", filters=filters, fields=fields, order_by="name", limit=FIND_DOCTYPES_READ)
+	found = []
+	for row in _rank_doctypes(rows, search):
+		if frappe.has_permission(row["name"], "read"):
+			found.append({"name": row["name"], "module": row["module"]})
+			if len(found) >= limit:
+				break
+	return found
+
+
+FIND_DOCTYPES_READ = 300  # DocTypes read to rank a keyword search
+
+
+def _rank_doctypes(rows: list[dict], search: str | None) -> list[dict]:
+	"""DocTypes best match first: the exact name, then a name with the keyword as a whole word, then
+	one that starts with it; record types before single settings pages; shorter names (the plain
+	"Stock Entry" before "Stock Ledger Entry") before longer ones. Alphabetical within a tie."""
+	if not search:
+		return list(rows)
+	keyword = search.strip().lower()
+	singular = keyword[:-1] if len(keyword) > 3 and keyword.endswith("s") else keyword
+
+	def rank(row: dict) -> tuple:
+		name = row["name"].lower()
+		words = name.split()
+		return (
+			name not in (keyword, singular),
+			not ({keyword, singular} & set(words)),
+			not name.startswith(singular),
+			bool(row.get("issingle")),
+			len(words),
+			name,
+		)
+
+	return sorted(rows, key=rank)
 
 
 @tool

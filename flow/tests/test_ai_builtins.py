@@ -857,3 +857,42 @@ class TestUnknownRecordType(IntegrationTestCase):
 			self.assertIsNotNone(tool.precheck)
 		self.assertIn("not a record type", show_records.precheck({"doctype": "Zzq Balance"}))
 		self.assertIsNone(show_records.precheck({"doctype": "ToDo"}))
+
+
+class TestFindDoctypesRanking(IntegrationTestCase):
+	ROWS = [
+		{"name": "Quick Stock Balance", "module": "Stock", "issingle": 1},
+		{"name": "Stock Settings", "module": "Stock", "issingle": 1},
+		{"name": "Stock Ledger Entry", "module": "Stock", "issingle": 0},
+		{"name": "Stock Entry", "module": "Stock", "issingle": 0},
+		{"name": "Bulk Stocktake", "module": "Stock", "issingle": 0},
+		{"name": "Stock", "module": "Stock", "issingle": 0},
+	]
+
+	def test_the_exact_name_then_whole_word_matches_then_the_rest(self):
+		from flow.tools.builtins import _rank_doctypes
+
+		names = [r["name"] for r in _rank_doctypes(self.ROWS, "stock")]
+		self.assertEqual(names[0], "Stock")
+		self.assertEqual(names[1:3], ["Stock Entry", "Stock Ledger Entry"])  # record types, shorter name first
+		self.assertEqual(names[-1], "Bulk Stocktake")  # the word is only part of another word
+		self.assertLess(names.index("Stock Settings"), names.index("Bulk Stocktake"))
+		self.assertLess(names.index("Stock Entry"), names.index("Stock Settings"))
+
+	def test_a_plural_keyword_finds_the_singular_name(self):
+		from flow.tools.builtins import _rank_doctypes
+
+		self.assertEqual(_rank_doctypes(self.ROWS, "stocks")[0]["name"], "Stock")
+
+	def test_no_keyword_keeps_the_order_given(self):
+		from flow.tools.builtins import _rank_doctypes
+
+		self.assertEqual(_rank_doctypes(self.ROWS, None), self.ROWS)
+
+	def test_the_tool_returns_the_best_match_first_and_no_extra_keys(self):
+		from flow.tools.builtins import find_doctypes
+
+		found = find_doctypes.func(search="note", limit=3)
+		self.assertTrue(found)
+		self.assertEqual(found[0]["name"], "Note")
+		self.assertEqual(set(found[0]), {"name", "module"})
