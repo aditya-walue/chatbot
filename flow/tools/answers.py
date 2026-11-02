@@ -46,6 +46,8 @@ def _builtins():
 
 LIST_LIMIT = 20
 MAX_WORKSPACES = 3
+MAX_ACCESS_ROWS = 5000  # most rows read when matching a name to roles or users
+MAX_STOCK_ROWS = 5000  # most reorder levels / stock records low_stock reads
 MAX_RECORD_TYPE_WORDS = 4  # words of a record type's name
 MAX_UNAPPLIED_WORDS = 3  # leftover words of a list request that may be passed over
 # The most records one list shows, whatever limit is asked for.
@@ -569,7 +571,7 @@ def low_stock(
 			"Item Reorder",
 			filters={"parenttype": "Item", "warehouse_reorder_level": [">", 0]},
 			fields=["parent", "warehouse", "warehouse_reorder_level"],
-			limit=0,
+			limit=MAX_STOCK_ROWS,
 		)
 	]
 	if not levels:
@@ -590,7 +592,7 @@ def low_stock(
 		"Bin",
 		filters={"item_code": ["in", list({r["item"] for r in levels})]},
 		fields=["item_code", "warehouse", "actual_qty"],
-		limit=0,
+		limit=MAX_STOCK_ROWS,
 	)
 	low = _below_reorder(levels, {(b.item_code, b.warehouse): b.actual_qty for b in bins})
 	if not low:
@@ -600,6 +602,8 @@ def low_stock(
 		for r in low[:limit]
 	)
 	more = f"\n\nShowing {limit} of {len(low)}." if len(low) > limit else ""
+	if len(levels) >= MAX_STOCK_ROWS:
+		more += f"\n\nOnly the first {MAX_STOCK_ROWS} reorder levels were checked."
 	return {
 		"answer": f"**{len(low)} item{'s' if len(low) != 1 else ''} at or below the reorder level:**\n\n"
 		f"| Item | Warehouse | In stock | Reorder level |\n|---|---|---|---|\n{rows}{more}"
@@ -1426,14 +1430,14 @@ def doctype_access(
 
 def _users_by_role(roles: list[str]) -> dict[str, list[str]]:
 	"""{role: enabled system users who hold it}, without Administrator and Guest."""
-	held = frappe.get_all("Has Role", filters={"parenttype": "User", "role": ["in", roles]}, fields=["parent", "role"], limit=0)
+	held = frappe.get_all("Has Role", filters={"parenttype": "User", "role": ["in", roles]}, fields=["parent", "role"], limit=MAX_ACCESS_ROWS)
 	people = {
 		u.name: u
 		for u in frappe.get_all(
 			"User",
 			filters={"name": ["in", list({h.parent for h in held})], "enabled": 1, "user_type": "System User"},
 			fields=["name", "full_name"],
-			limit=0,
+			limit=MAX_ACCESS_ROWS,
 		)
 		if u.name not in ("Administrator", "Guest")
 	}
@@ -1470,7 +1474,7 @@ def role_users_arguments(text: str) -> dict[str, Any] | None:
 	belong to doctype_access."""
 	if not ASKS_PEOPLE.search(text or "") or access_arguments(text):
 		return None
-	role = _name_in_text(WHO_ASKS.sub(" ", text), frappe.get_all("Role", pluck="name", limit=0))
+	role = _name_in_text(WHO_ASKS.sub(" ", text), frappe.get_all("Role", pluck="name", limit=MAX_ACCESS_ROWS))
 	return {"role": role} if role else None
 
 
@@ -1486,7 +1490,7 @@ def user_roles_arguments(text: str) -> dict[str, Any] | None:
 		return {"user": email.group(0)}
 	if not frappe.has_permission("User", "read"):
 		return None
-	users = frappe.get_all("User", filters={"enabled": 1, "user_type": "System User"}, fields=["name", "full_name"], limit=0)
+	users = frappe.get_all("User", filters={"enabled": 1, "user_type": "System User"}, fields=["name", "full_name"], limit=MAX_ACCESS_ROWS)
 	label = _name_in_text(text, [u.full_name for u in users])
 	return {"user": next(u.name for u in users if u.full_name == label)} if label else None
 

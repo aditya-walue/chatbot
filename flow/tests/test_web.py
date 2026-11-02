@@ -416,3 +416,58 @@ class TestDocsHowto(IntegrationTestCase):
 		self.addCleanup(lambda: frappe.conf.pop("flow_web_search_enabled", None))
 		with self.assertRaises(ValueError):
 			docs_howto.func(topic="anything")
+
+
+class TestDocsCache(IntegrationTestCase):
+	"""Docs searches and pages are kept for a while, but a failed fetch never is."""
+
+	class _Cache:
+		def __init__(self):
+			self.kept = {}
+
+		def get_value(self, key):
+			return self.kept.get(key)
+
+		def set_value(self, key, value, expires_in_sec=None):
+			self.kept[key] = value
+
+	def _run(self, keys, fetch, cache):
+		from unittest.mock import patch
+
+		from flow.tools.web import _cached_many
+
+		frappe.flags.in_test = False  # the cache is skipped under test; a fake one stands in
+		try:
+			with patch.object(frappe, "cache", cache):
+				return _cached_many("probe", keys, fetch)
+		finally:
+			frappe.flags.in_test = True
+
+	def test_a_value_is_fetched_once_and_then_kept(self):
+		calls = []
+		cache = self._Cache()
+
+		def fetch(key):
+			calls.append(key)
+			return f"value of {key}"
+
+		self.assertEqual(self._run(["a", "b"], fetch, cache), {"a": "value of a", "b": "value of b"})
+		self.assertEqual(self._run(["a", "b", "c"], fetch, cache)["c"], "value of c")
+		self.assertEqual(sorted(calls), ["a", "b", "c"])  # a and b were not fetched again
+
+	def test_a_failed_fetch_gives_nothing_and_is_not_kept(self):
+		cache = self._Cache()
+
+		def fetch(key):
+			raise ValueError("down")
+
+		self.assertEqual(self._run(["a"], fetch, cache), {"a": None})
+		self.assertEqual(cache.kept, {})
+
+	def test_nothing_is_kept_under_test(self):
+		from flow.tools.web import _cached_many
+
+		calls = []
+		_cached_many("probe", ["a"], lambda key: calls.append(key) or "x")
+		_cached_many("probe", ["a"], lambda key: calls.append(key) or "x")
+		self.assertEqual(calls, ["a", "a"])

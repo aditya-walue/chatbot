@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Annotated, Any
+from typing import Annotated, Any, Callable
 from urllib.parse import parse_qs, urlparse
 
 import frappe
@@ -44,6 +44,7 @@ MIN_VARIANT_WORDS = 2
 DOCS_TEXT_LIMIT = 3500
 RESULTS_LIMIT = 5
 TIMEOUT_SECONDS = 10
+DOCS_CACHE_SECONDS = 3600
 QUERY_LIMIT = 200
 # Web results are kept to these sources (host suffix, path prefix); a site can set its own list in
 # `flow_web_search_domains` ("host" or "host/path" strings). Anything else is not about Frappe.
@@ -286,14 +287,8 @@ def _candidate_pages(topic: str) -> list[dict[str, str]]:
 	doctypes = _doctype_queries(words, named_words)
 	queries = list(dict.fromkeys(queries + doctypes)) or [topic]
 
-	def fetch(query: str) -> list[dict[str, Any]]:
-		try:
-			return _fetch_docs(query)
-		except ValueError:
-			return []
-
-	with ThreadPoolExecutor(max_workers=len(queries)) as pool:
-		fetched = list(pool.map(fetch, queries))
+	hits = _cached_many("search", queries, _fetch_docs)
+	fetched = [hits[query] or [] for query in queries]  # a search that failed finds nothing
 	installed, preferred = _installed_app_words(), _preferred_apps(topic)
 	ranked = [_rank_pages(hits, installed, preferred) for hits in fetched]
 	found: dict[str, dict[str, str]] = {}
@@ -330,14 +325,11 @@ def _answering_section(topic: str) -> dict[str, Any] | None:
 	the search ranks whole pages by loose matching, so the page whose own section fits the words
 	best is picked instead of simply the first. None when the search finds nothing, or when no
 	section mentions any of the words (the docs don't cover it)."""
-	from concurrent.futures import ThreadPoolExecutor
-
 	found = _candidate_pages(" ".join(str(topic or "").split())[:QUERY_LIMIT])
 	if not found:
 		return None
-	with ThreadPoolExecutor(max_workers=len(found)) as pool:
-		texts = list(pool.map(lambda p: _page_text(p["url"], None) or p["snippet"], found))
-	pages = list(zip(found, texts))
+	downloaded = _cached_many("page", [p["url"] for p in found], _download_page)
+	pages = [(p, downloaded[p["url"]] or p["snippet"]) for p in found]
 	ranked = rank_sections(pages, topic)
 	if not ranked:
 		return None
@@ -449,6 +441,38 @@ def _fetch_docs(query: str) -> list[dict[str, Any]]:
 		raise ValueError(f"The Frappe documentation can't be reached right now ({type(e).__name__}).") from e
 
 
+def _cached_many(kind: str, keys: list[str], fetch: Callable[[str], Any]) -> dict[str, Any]:
+	"""{key: value} for each key: kept values from the site cache (the docs change slowly, and one
+	how-to question makes several searches and page reads), the rest fetched in threads (`fetch`
+	needs no Frappe context) and kept. A fetch that fails gives None for its key and is not kept.
+	The cache is not used under test."""
+	from concurrent.futures import ThreadPoolExecutor
+
+	use_cache = not frappe.flags.in_test
+	found: dict[str, Any] = {}
+	if use_cache:
+		for key in keys:
+			value = frappe.cache.get_value(f"flow:docs:{kind}:{key}")
+			if value is not None:
+				found[key] = value
+	missing = [key for key in dict.fromkeys(keys) if key not in found]
+
+	def get(key: str) -> Any:
+		try:
+			return fetch(key)
+		except Exception:
+			return None
+
+	if missing:
+		with ThreadPoolExecutor(max_workers=len(missing)) as pool:
+			fetched = dict(zip(missing, pool.map(get, missing)))
+		for key, value in fetched.items():
+			if value is not None and use_cache:
+				frappe.cache.set_value(f"flow:docs:{kind}:{key}", value, expires_in_sec=DOCS_CACHE_SECONDS)
+		found.update(fetched)
+	return {key: found.get(key) for key in keys}
+
+
 def _rank_pages(found: list[dict[str, Any]], installed: set[str], preferred: list[set[str]]) -> list[dict[str, str]]:
 	pages = []
 	for i, item in enumerate(found):
@@ -552,9 +576,31 @@ def _installed_app_words() -> set[str]:
 	return words
 
 
+def _download_page(url: str) -> str:
+	"""A docs page as Markdown (docs.frappe.io serves <page>.md), without its front matter. Needs
+	no Frappe context. Raises when the page can't be read."""
+	import requests
+
+	response = requests.get(
+		f"{url}.md", headers={"User-Agent": "Mozilla/5.0 (compatible; FlowAssistant/1.0)"}, timeout=TIMEOUT_SECONDS
+	)
+	response.raise_for_status()
+	text = response.text
+	if text.startswith("---"):
+		end = text.find("\n---", 3)
+		text = text[end + 4 :] if end != -1 else text
+	return text.strip()
+
+
 def _page_text(url: str, limit: int | None = DOCS_TEXT_LIMIT) -> str:
-	"""A docs page as Markdown (docs.frappe.io serves <page>.md), without its front matter, cut to
-	`limit` characters (None for all of it)."""
+	"""A docs page as Markdown, cut to `limit` characters (None for all of it); "" when the page
+	can't be read."""
+	text = _cached_many("page", [url], _download_page)[url] or ""
+	return text if limit is None or len(text) <= limit else text[:limit].rsplit("\n", 1)[0] + "\n…"
+
+
+@redis_cache(ttl=DOCS_CACHE_SECONDS)
+def _markdown(url: str) -> str:
 	import requests
 
 	try:
@@ -562,12 +608,10 @@ def _page_text(url: str, limit: int | None = DOCS_TEXT_LIMIT) -> str:
 			f"{url}.md", headers={"User-Agent": "Mozilla/5.0 (compatible; FlowAssistant/1.0)"}, timeout=TIMEOUT_SECONDS
 		)
 		response.raise_for_status()
-	except requests.RequestException:
-		return ""
+	except requests.RequestException as e:
+		raise LookupError(url) from e  # raised, so an unreachable page is never kept
 	text = response.text
 	if text.startswith("---"):
 		end = text.find("\n---", 3)
 		text = text[end + 4 :] if end != -1 else text
-	text = text.strip()
-	return text if limit is None or len(text) <= limit else text[:limit].rsplit("\n", 1)[0] + "\n…"
-
+	return text.strip()
