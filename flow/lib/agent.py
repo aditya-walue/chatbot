@@ -297,6 +297,7 @@ class Agent:
 			messages.append(_assistant_message(response))
 
 			if not response.tool_calls:
+				_say_what_failed(response, messages)
 				return RunResult(
 					output=response.content,
 					messages=messages,
@@ -428,6 +429,9 @@ class Agent:
 			messages.append(_assistant_message(response))
 
 			if not response.tool_calls:
+				said = _say_what_failed(response, messages)
+				if said:
+					yield TextChunk(text=said)
 				yield Done(
 					result=RunResult(
 						output=response.content,
@@ -840,6 +844,26 @@ class Agent:
 		return result
 
 
+def _say_what_failed(response: ChatResponse, messages: list[dict[str, Any]]) -> str | None:
+	"""A model that ends its turn with no text right after a tool failed leaves the user with a red
+	step and no reason: its reply becomes the tool's own error. Returns the text it added, if any."""
+	if (response.content or "").strip():
+		return None
+	last = messages[-2] if len(messages) > 1 else {}
+	if last.get("role") != "tool":
+		return None
+	try:
+		error = json.loads(last.get("content") or "").get("error")
+	except (ValueError, AttributeError):
+		return None
+	if not isinstance(error, str) or not error.strip():
+		return None
+	said = f"That did not work: {error.strip()}"
+	response.content = said
+	messages[-1] = {**messages[-1], "content": said}
+	return said
+
+
 def _save_write() -> None:
 	"""Commit what an approved write tool just saved. A streamed response is iterated after the
 	framework's own end-of-request commit, and the stream stays open while the browser model writes
@@ -880,8 +904,8 @@ TOOL_GROUPS: tuple[tuple[re.Pattern, tuple[str, ...]], ...] = tuple(
 	)
 )
 # Looking things up is what the model falls back on when no specific intent matched.
-DEFAULT_TOOLS = ("show_records", "count", "read", "find_doctypes", "where_to_find")
-MAX_TOOLS = 6
+DEFAULT_TOOLS = ("show_records", "count", "low_stock", "on_leave", "where_to_find", "read", "find_doctypes")
+MAX_TOOLS = 7
 # Always offered beside the chosen tools: the fallback when none of them can answer.
 FALLBACK_TOOLS = ("docs_howto", "frappe_docs", "web_search")
 RECENT_USER_TURNS = 2

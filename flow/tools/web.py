@@ -379,15 +379,27 @@ def docs_howto(
 	if not found:
 		return _web_fallback(topic)
 	best = found["sections"][0]
-	# The sections that fit the words best, even a single one: a model that reads the question
-	# picks among them, or says none answers it (Agent._pick_option); without one the best match
-	# is the answer.
-	return {
+	result = {
 		"query": topic,
 		"page": {"title": best["page"].get("title") or "page", "url": best["page"]["url"]},
 		"answer": _format_section(best),
-		"options": [{"label": _option_label(s), "answer": _format_section(s)} for s in found["sections"]],
+		# The section's own heading names everything asked: no doubt it is the answer.
+		"confident": _heading_covers(best["heading"], topic),
 	}
+	if not result["confident"]:
+		# The sections that fit the words best, even a single one: a model that reads the question
+		# picks among them, or says none answers it (Agent._pick_option); without one the best
+		# match is the answer.
+		result["options"] = [{"label": _option_label(s), "answer": _format_section(s)} for s in found["sections"]]
+	return result
+
+
+def _heading_covers(heading: str | None, topic: str) -> bool:
+	"""Whether a heading holds every longer word (4+ letters, matched on their first five) of the
+	topic: "Converting a Lead to a Deal" covers "convert lead deal"."""
+	words = {w[:5] for w in re.findall(r"[a-z]+", str(topic).lower()) if len(w) >= 4}
+	text = str(heading or "").lower()
+	return bool(words) and bool(text) and all(w in text for w in words)
 
 
 def _option_label(section: dict[str, Any]) -> str:

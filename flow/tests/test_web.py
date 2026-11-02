@@ -316,17 +316,33 @@ class TestDocsHowto(IntegrationTestCase):
 		with patch("requests.get", side_effect=self._get), patch("flow.tools.web._installed_app_words", return_value={"app"}):
 			from flow.tools.web import docs_howto
 
-			result = docs_howto.func(topic="making a widget")
-		self.assertTrue(result["answer"].startswith("Open the form and save."))  # the best match stays the answer
-		self.assertEqual(result["options"][0]["answer"], result["answer"])
-		self.assertIn("Widgets > Making a widget: Open the form and save.", result["options"][0]["label"])
+			result = docs_howto.func(topic="widget thing")
+		self.assertFalse(result["confident"])
+		self.assertEqual(result["options"][0]["answer"], result["answer"])  # the best match stays the answer
 		self.assertGreater(len(result["options"]), 1)
+
+	def test_a_heading_that_names_everything_asked_needs_no_choice(self):
+		with patch("requests.get", side_effect=self._get), patch("flow.tools.web._installed_app_words", return_value={"app"}):
+			from flow.tools.web import docs_howto
+
+			result = docs_howto.func(topic="converting widget gadget")
+		self.assertTrue(result["confident"])
+		self.assertNotIn("options", result)
+		self.assertTrue(result["answer"].startswith("Press **Convert**."))
+
+	def test_a_partial_heading_match_leaves_the_choice_to_the_model(self):
+		from flow.tools.web import _heading_covers
+
+		self.assertTrue(_heading_covers("Converting a Lead to a Deal", "convert lead to deal"))
+		self.assertFalse(_heading_covers("Contacts", "convert lead to deal"))
+		self.assertFalse(_heading_covers(None, "convert lead"))
+		self.assertFalse(_heading_covers("Anything", "a to"))  # no longer words: nothing to cover
 
 	def test_a_section_is_offered_once(self):
 		with patch("requests.get", side_effect=self._get), patch("flow.tools.web._installed_app_words", return_value={"app"}):
 			from flow.tools.web import docs_howto
 
-			result = docs_howto.func(topic="making a widget")
+			result = docs_howto.func(topic="widget thing")
 		labels = [o["label"] for o in result["options"]]
 		self.assertEqual(len(labels), len(set(labels)))
 
@@ -334,7 +350,7 @@ class TestDocsHowto(IntegrationTestCase):
 		with patch("requests.get", side_effect=self._get), patch("flow.tools.web._installed_app_words", return_value={"app"}):
 			from flow.tools.web import docs_howto
 
-			result = docs_howto.func(topic="convert widget gadget")
+			result = docs_howto.func(topic="press convert")
 		self.assertEqual(len(result["options"]), 1)
 
 	def test_a_page_deeper_in_the_results_wins_when_its_section_fits_better(self):

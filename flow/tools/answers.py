@@ -496,6 +496,11 @@ def explain_doctype(doctype: DocTypeArg) -> dict[str, Any]:
 	"""Explain what one DocType is: module, purpose, lifecycle, main fields and links. Use for
 	"what is <DocType>". Not for a module, app or feature as a whole ("how does payroll work"): use
 	frappe_docs."""
+	if not frappe.db.exists("DocType", doctype):
+		# A concept ("valuation rate"), not a record type of this site: the docs define it.
+		from flow.tools.web import docs_howto
+
+		return docs_howto.func(topic=f"what is {doctype}")
 	if not frappe.has_permission(doctype, "read"):
 		raise PermissionError(f"No permission to read {doctype}")
 	meta = frappe.get_meta(doctype)
@@ -530,6 +535,113 @@ def explain_doctype(doctype: DocTypeArg) -> dict[str, Any]:
 		if count is not None:
 			parts.append(f"There {'is' if count == 1 else 'are'} {count} on this site — [open the list](/desk/{route}).")
 	return {"answer": "\n\n".join(parts), "doctype": doctype}
+
+
+# ── low_stock ─────────────────────────────────────────────────────────────────────────────
+
+
+def _below_reorder(levels: list[dict[str, Any]], quantities: dict[tuple[str, str], float]) -> list[dict[str, Any]]:
+	"""The reorder rows (item, warehouse, level) whose stock in that warehouse is at or below the
+	level, lowest stock first. A warehouse with no stock record counts as zero."""
+	low = []
+	for row in levels:
+		have = float(quantities.get((row["item"], row["warehouse"]), 0) or 0)
+		if have <= float(row["level"] or 0):
+			low.append({**row, "have": have})
+	return sorted(low, key=lambda r: (r["have"] - float(r["level"] or 0), r["item"]))
+
+
+@tool(final_answer=True)
+def low_stock(
+	limit: Annotated[int, "Most rows to show."] = LIST_LIMIT,
+) -> dict[str, Any]:
+	"""Items whose stock is at or below their reorder level, per warehouse. Use for "which items
+	are low in stock", "what needs reordering", "running out of stock". Changes nothing."""
+	for doctype in ("Item", "Bin"):
+		if not frappe.db.exists("DocType", doctype):
+			raise ValueError("Stock isn't set up on this site.")
+		if not frappe.has_permission(doctype, "read"):
+			raise PermissionError(f"No permission to read {doctype}")
+	limit = min(max(int(limit or LIST_LIMIT), 1), LIST_ALL_LIMIT)
+	levels = [
+		{"item": r.parent, "warehouse": r.warehouse, "level": r.warehouse_reorder_level}
+		for r in frappe.get_all(
+			"Item Reorder",
+			filters={"parenttype": "Item", "warehouse_reorder_level": [">", 0]},
+			fields=["parent", "warehouse", "warehouse_reorder_level"],
+			limit=0,
+		)
+	]
+	if not levels:
+		# Nothing says what "low" is here: show where stock is thinnest instead of guessing a level.
+		thin = frappe.get_list(
+			"Bin", filters={"actual_qty": [">", 0]}, fields=["item_code", "warehouse", "actual_qty"], order_by="actual_qty asc", limit=limit
+		)
+		if not thin:
+			return {"answer": "There is no stock recorded on this site."}
+		rows = "\n".join(
+			f"| [{r.item_code}](/desk/item/{quote(str(r.item_code))}) | {r.warehouse} | {_fmt(r.actual_qty)} |" for r in thin
+		)
+		return {
+			"answer": "No item has a reorder level set, so I can't say which are low. These have the least stock:\n\n"
+			f"| Item | Warehouse | In stock |\n|---|---|---|\n{rows}"
+		}
+	bins = frappe.get_list(
+		"Bin",
+		filters={"item_code": ["in", list({r["item"] for r in levels})]},
+		fields=["item_code", "warehouse", "actual_qty"],
+		limit=0,
+	)
+	low = _below_reorder(levels, {(b.item_code, b.warehouse): b.actual_qty for b in bins})
+	if not low:
+		return {"answer": f"No item is at or below its reorder level ({len(levels)} reorder levels checked)."}
+	rows = "\n".join(
+		f"| [{r['item']}](/desk/item/{quote(str(r['item']))}) | {r['warehouse']} | {_fmt(r['have'])} | {_fmt(r['level'])} |"
+		for r in low[:limit]
+	)
+	more = f"\n\nShowing {limit} of {len(low)}." if len(low) > limit else ""
+	return {
+		"answer": f"**{len(low)} item{'s' if len(low) != 1 else ''} at or below the reorder level:**\n\n"
+		f"| Item | Warehouse | In stock | Reorder level |\n|---|---|---|---|\n{rows}{more}"
+	}
+
+
+# ── on_leave ──────────────────────────────────────────────────────────────────────────────
+
+
+@tool(final_answer=True)
+def on_leave(
+	date: Annotated[str | None, "Day to check, YYYY-MM-DD. Omit for today."] = None,
+) -> dict[str, Any]:
+	"""Who is on approved leave on a day (today by default), from the leave applications that cover
+	it. Use for "who is on leave today", "who is off tomorrow". Changes nothing."""
+	if not frappe.db.exists("DocType", "Leave Application"):
+		raise ValueError("Leave management isn't set up on this site.")
+	if not frappe.has_permission("Leave Application", "read"):
+		raise PermissionError("No permission to read Leave Application")
+	try:
+		day = frappe.utils.getdate(date) if date else frappe.utils.getdate()
+	except Exception:
+		raise ValueError(f"{date!r} is not a date. Use YYYY-MM-DD.") from None
+	rows = frappe.get_list(
+		"Leave Application",
+		filters={"status": "Approved", "docstatus": ["!=", 2], "from_date": ["<=", day], "to_date": [">=", day]},
+		fields=["name", "employee", "employee_name", "leave_type", "from_date", "to_date"],
+		order_by="employee_name asc",
+		limit=LIST_ALL_LIMIT,
+	)
+	label = "today" if day == frappe.utils.getdate() else f"on {frappe.utils.formatdate(day)}"
+	if not rows:
+		return {"answer": f"No one is on approved leave {label}."}
+	lines = "\n".join(
+		f"| [{r.employee_name or r.employee}](/desk/leave-application/{quote(str(r.name))}) | {r.leave_type} | "
+		f"{frappe.utils.formatdate(r.from_date)} to {frappe.utils.formatdate(r.to_date)} |"
+		for r in rows
+	)
+	return {
+		"answer": f"**{len(rows)} {'person is' if len(rows) == 1 else 'people are'} on approved leave {label}:**\n\n"
+		f"| Employee | Leave type | Dates |\n|---|---|---|\n{lines}"
+	}
 
 
 # ── where_to_find ─────────────────────────────────────────────────────────────────────────

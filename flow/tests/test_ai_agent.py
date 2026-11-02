@@ -1288,3 +1288,35 @@ class TestApprovedWritesAreCommitted(IntegrationTestCase):
 
 	def test_a_read_commits_nothing(self):
 		self.assertEqual(self._commits("read_thing", {}), 0)
+
+
+class TestSayWhatFailed(IntegrationTestCase):
+	"""A model that ends its turn with no text after a tool failed gives the user the tool's error."""
+
+	def _messages(self, tool_content):
+		return [
+			{"role": "user", "content": "do it"},
+			{"role": "assistant", "content": "", "tool_calls": []},
+			{"role": "tool", "tool_call_id": "c1", "content": tool_content},
+			{"role": "assistant", "content": ""},
+		]
+
+	def test_the_error_is_shown_when_the_model_says_nothing(self):
+		from flow.lib.agent import _say_what_failed
+
+		response = ChatResponse(content="")
+		messages = self._messages('{"error": "No field called x."}')
+		said = _say_what_failed(response, messages)
+		self.assertEqual(said, "That did not work: No field called x.")
+		self.assertEqual(response.content, said)
+
+	def test_a_model_that_replied_is_left_alone(self):
+		from flow.lib.agent import _say_what_failed
+
+		self.assertIsNone(_say_what_failed(ChatResponse(content="Done."), self._messages('{"error": "x"}')))
+
+	def test_a_tool_result_without_an_error_is_left_alone(self):
+		from flow.lib.agent import _say_what_failed
+
+		self.assertIsNone(_say_what_failed(ChatResponse(content=""), self._messages('{"created": ["a"]}')))
+		self.assertIsNone(_say_what_failed(ChatResponse(content=""), self._messages("not json")))

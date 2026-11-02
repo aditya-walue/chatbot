@@ -62,6 +62,15 @@ class TestAnswerRoutes(IntegrationTestCase):
 		self.assertTrue(listed.endswith('Not used as a filter: "that is added".'))
 		self.assertNotIn("Not used as a filter", show_records(doctype="ToDo")["answer"])
 
+	def test_a_concept_that_is_not_a_record_type_is_defined_from_the_docs(self):
+		from unittest.mock import patch
+
+		with patch("flow.tools.web.docs_howto") as docs:
+			docs.func.return_value = {"answer": "Docs say what it is."}
+			result = explain_doctype.func(doctype="Zzq Notarealtype")
+		docs.func.assert_called_once_with(topic="what is Zzq Notarealtype")
+		self.assertEqual(result["answer"], "Docs say what it is.")
+
 	def test_where_to_find_points_to_the_list_and_new_form_from_frappes_own_links(self):
 		from urllib.parse import urlparse
 
@@ -209,6 +218,40 @@ class TestAssignmentSteps(IntegrationTestCase):
 		self.assertEqual(args, {"item": pair[0], "target": pair[1]})
 		self.assertIn("no field or table", assignment_steps.func(**args)["answer"])
 		self.assertIsNone(loose_assignment("is it possible to assign a thing to a place?"))
+
+
+class TestLowStockAndLeave(IntegrationTestCase):
+	def test_only_rows_at_or_below_their_level_are_low_and_the_thinnest_come_first(self):
+		from flow.tools.answers import _below_reorder
+
+		levels = [
+			{"item": "A", "warehouse": "W1", "level": 10},
+			{"item": "B", "warehouse": "W1", "level": 5},
+			{"item": "C", "warehouse": "W2", "level": 8},
+			{"item": "D", "warehouse": "W2", "level": 3},
+		]
+		quantities = {("A", "W1"): 4, ("B", "W1"): 5, ("D", "W2"): 9}  # C has no stock record at all
+		low = _below_reorder(levels, quantities)
+		self.assertEqual([r["item"] for r in low], ["C", "A", "B"])
+		self.assertEqual(low[0]["have"], 0)
+
+	def test_low_stock_answers_from_the_site_without_error(self):
+		from flow.tools.answers import low_stock
+
+		if not frappe.db.exists("DocType", "Bin"):
+			self.skipTest("needs stock")
+		answer = low_stock.func()["answer"]
+		self.assertIsInstance(answer, str)
+		self.assertTrue(answer)
+
+	def test_on_leave_covers_the_day_and_rejects_a_bad_date(self):
+		from flow.tools.answers import on_leave
+
+		if not frappe.db.exists("DocType", "Leave Application"):
+			self.skipTest("needs leave management")
+		self.assertIn("on approved leave", on_leave.func()["answer"])
+		with self.assertRaises(ValueError):
+			on_leave.func(date="not a date")
 
 
 class TestStatusSteps(IntegrationTestCase):

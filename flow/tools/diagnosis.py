@@ -248,10 +248,12 @@ def _docs_help(message: str, exception: str) -> str | None:
 	from flow.tools.web import NOT_IN_DOCS
 
 	try:
-		answer = docs_howto.func(topic=words).get("answer")
+		found = docs_howto.func(topic=words)
 	except Exception:
 		return None
-	# "Nothing in the docs" is no help with an error.
+	# Only a section whose own heading names the problem is offered: any other docs page is a guess,
+	# and text that is no error report at all (a question, an instruction) would get one too.
+	answer = found.get("answer") if found.get("confident") else None
 	return None if answer == NOT_IN_DOCS else answer
 
 
