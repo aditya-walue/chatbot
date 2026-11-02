@@ -781,7 +781,7 @@ class TestPrechecksCatchWhatTheToolWouldReport(IntegrationTestCase):
 		from flow.tools.builtins import _precheck_create
 
 		error = _precheck_create({"doctype": "No Such Doctype", "records": [{"title": "x"}]})
-		self.assertIn("is not a DocType on this site", error)
+		self.assertIn("is not a record type on this site", error)
 
 	def test_read_names_an_unknown_field(self):
 		from flow.tools.builtins import _precheck_query
@@ -831,3 +831,29 @@ class TestDidYouMean(IntegrationTestCase):
 		self.assertIn("'descriptionn' (did you mean description?)", error)
 		self.assertIn("'zzqx'", error)
 		self.assertNotIn("'zzqx' (did you mean", error)
+
+
+class TestUnknownRecordType(IntegrationTestCase):
+	def test_the_closest_real_record_types_are_named(self):
+		from flow.tools.builtins import _unknown_doctype
+
+		error = _unknown_doctype("Todo Item")
+		self.assertIn("'Todo Item' is not a record type on this site.", error)
+		self.assertIn("ToDo", error)
+		self.assertIn("find_doctypes", error)
+
+	def test_a_real_or_missing_name_is_not_an_error(self):
+		from flow.tools.builtins import _unknown_doctype
+
+		for value in ("ToDo", "", None, 5):
+			self.assertIsNone(_unknown_doctype(value), value)
+
+	def test_count_read_and_show_records_all_say_it_before_running(self):
+		from flow.tools.answers import show_records
+		from flow.tools.builtins import _precheck_query, count, read
+
+		self.assertIn("not a record type", _precheck_query({"doctype": "Zzq Balance", "filters": {"a": 1}}))
+		for tool in (count, read):
+			self.assertIsNotNone(tool.precheck)
+		self.assertIn("not a record type", show_records.precheck({"doctype": "Zzq Balance"}))
+		self.assertIsNone(show_records.precheck({"doctype": "ToDo"}))

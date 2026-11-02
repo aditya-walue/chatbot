@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
 DEFAULT_MAX_ITERATIONS = 20
 MAX_FAILED_STEPS = 2
+MAX_ERRORED_STEPS = 3  # steps in a row whose every tool call failed, before the user is told why
 MAX_SAME_TOOL_STEPS = 3
 RESEARCH_TEXT_LIMIT = 1500
 STUCK_MESSAGE = (
@@ -280,6 +281,7 @@ class Agent:
 
 		routed = self._routed_response(messages) if route else None
 		failed_streak = 0
+		errored_streak, last_error = 0, None
 		same_tool_streak, last_tools = 0, frozenset()
 		for iteration in range(1, self.max_iterations + 1):
 			if routed is not None:
@@ -333,6 +335,12 @@ class Agent:
 			answer = None if questions else self._final_answer(results)
 			if answer is None and not questions and failed_streak >= MAX_FAILED_STEPS:
 				answer = STUCK_MESSAGE
+			# Step after step of tool calls that all fail (a model repeating a record type that does
+			# not exist): say what went wrong now, rather than let it run out its iterations.
+			step_error = _step_error(results)
+			errored_streak, last_error = (errored_streak + 1, step_error) if step_error else (0, None)
+			if answer is None and not questions and errored_streak >= MAX_ERRORED_STEPS:
+				answer = f"That did not work: {last_error}"
 			# The same tool step after step (a small model re-searching the docs with new words)
 			# is a loop; once there is something to show, show it instead of searching again.
 			step_tools = frozenset(c.name for c in response.tool_calls)
@@ -419,6 +427,7 @@ class Agent:
 			)
 			return
 		failed_streak = 0
+		errored_streak, last_error = 0, None
 		same_tool_streak, last_tools = 0, frozenset()
 		for iteration in range(1, self.max_iterations + 1):
 			if routed is not None:
@@ -470,6 +479,12 @@ class Agent:
 			answer = None if questions else self._final_answer(results)
 			if answer is None and not questions and failed_streak >= MAX_FAILED_STEPS:
 				answer = STUCK_MESSAGE
+			# Step after step of tool calls that all fail (a model repeating a record type that does
+			# not exist): say what went wrong now, rather than let it run out its iterations.
+			step_error = _step_error(results)
+			errored_streak, last_error = (errored_streak + 1, step_error) if step_error else (0, None)
+			if answer is None and not questions and errored_streak >= MAX_ERRORED_STEPS:
+				answer = f"That did not work: {last_error}"
 			# The same tool step after step (a small model re-searching the docs with new words)
 			# is a loop; once there is something to show, show it instead of searching again.
 			step_tools = frozenset(c.name for c in response.tool_calls)
@@ -842,6 +857,22 @@ class Agent:
 		if tool.requires_confirmation:
 			_save_write()
 		return result
+
+
+def _step_error(results: list[tuple[Any, Any]]) -> str | None:
+	"""The last error of a step in which every tool call failed, else None."""
+	errors = [_error_text(result) for _call, result in results]
+	return errors[-1] if errors and all(errors) else None
+
+
+def _error_text(result: Any) -> str | None:
+	if isinstance(result, str):
+		try:
+			result = json.loads(result)
+		except ValueError:
+			return None
+	error = result.get("error") if isinstance(result, dict) else None
+	return error.strip() if isinstance(error, str) and error.strip() else None
 
 
 def _say_what_failed(response: ChatResponse, messages: list[dict[str, Any]]) -> str | None:

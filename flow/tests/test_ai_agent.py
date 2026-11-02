@@ -1320,3 +1320,33 @@ class TestSayWhatFailed(IntegrationTestCase):
 
 		self.assertIsNone(_say_what_failed(ChatResponse(content=""), self._messages('{"created": ["a"]}')))
 		self.assertIsNone(_say_what_failed(ChatResponse(content=""), self._messages("not json")))
+
+
+class TestRepeatedFailures(IntegrationTestCase):
+	"""A model that keeps repeating tool calls that all fail is stopped with the reason."""
+
+	def test_an_error_is_read_from_a_serialized_or_a_plain_result(self):
+		from flow.lib.agent import _error_text, _step_error
+
+		self.assertEqual(_error_text('{"error": "No such thing."}'), "No such thing.")
+		self.assertEqual(_error_text({"error": " bad "}), "bad")
+		self.assertIsNone(_error_text('{"created": ["a"]}'))
+		self.assertIsNone(_error_text("plain text"))
+		self.assertIsNone(_error_text({"error": ""}))
+		self.assertEqual(_step_error([(None, '{"error": "a"}'), (None, '{"error": "b"}')]), "b")
+		self.assertIsNone(_step_error([(None, '{"error": "a"}'), (None, {"ok": True})]))
+		self.assertIsNone(_step_error([]))
+
+	def test_three_failed_steps_in_a_row_end_the_turn_with_the_error(self):
+		from flow.lib.agent import Agent
+		from flow.lib.tool import tool
+
+		@tool
+		def always_fails() -> dict:
+			"""Fails."""
+			raise ValueError("Stock Balance is not a record type.")
+
+		model = FakeModel([_tool_call("always_fails", {}, call_id=f"c{i}") for i in range(1, 9)])
+		result = Agent(model=model, tools=[always_fails], max_iterations=8).run("do it")
+		self.assertEqual(result.output, "That did not work: Stock Balance is not a record type.")
+		self.assertEqual(len(model.calls), 3)  # stopped after three, not eight

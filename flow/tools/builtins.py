@@ -195,8 +195,10 @@ def _precheck_query(args: dict[str, Any]) -> str | None:
 	import difflib
 
 	doctype, filters = args.get("doctype"), args.get("filters")
-	if not doctype or not frappe.db.exists("DocType", doctype):
+	if not doctype:
 		return None
+	if not frappe.db.exists("DocType", doctype):
+		return _unknown_doctype(doctype)
 	unknown_fields = _unknown_columns(doctype, args.get("fields"))
 	if unknown_fields:
 		return unknown_fields
@@ -258,6 +260,18 @@ def _similar_names(name: Any, names: list[str]) -> list[str]:
 def _did_you_mean(name: Any, names: list[str]) -> str:
 	close = _similar_names(name, names)
 	return f" (did you mean {', '.join(close)}?)" if close else ""
+
+
+def _unknown_doctype(doctype: Any) -> str | None:
+	"""An error for a record type that does not exist on this site, naming the closest real ones,
+	so a model that invented one ("Stock Balance") is pointed at the right name instead of being
+	told "not found"; None when it exists or none was given."""
+	if not isinstance(doctype, str) or not doctype.strip() or frappe.db.exists("DocType", doctype):
+		return None
+	keyed = {name.lower().replace(" ", "_"): name for name in _doctype_names().values()}
+	close = [keyed[key] for key in _similar_names(doctype, list(keyed))]
+	hint = f" Did you mean {', '.join(close)}?" if close else ""
+	return f"{doctype!r} is not a record type on this site.{hint} Use find_doctypes to look one up."
 
 
 # Columns Frappe adds to every record or child row (parent, _assign, _comments, ...): valid in `fields`.
@@ -1193,9 +1207,9 @@ def _apply_action(doctype: str, name: str, action: str, args: dict[str, Any]) ->
 
 
 def _precheck_create(args: dict[str, Any], context: str | None = None) -> str | None:
-	doctype = args.get("doctype")
-	if isinstance(doctype, str) and doctype and not frappe.db.exists("DocType", doctype):
-		return f"{doctype!r} is not a DocType on this site. Use find_doctypes for the exact name."
+	unknown = _unknown_doctype(args.get("doctype"))
+	if unknown:
+		return unknown
 	# A single object plainly means one record — small models often drop the list brackets.
 	# Normalised in place so the approval card and the call itself both see a list.
 	if isinstance(args.get("records"), dict):

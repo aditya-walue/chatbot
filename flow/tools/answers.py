@@ -357,7 +357,7 @@ def _status_value(doctype: str, word: str) -> str | None:
 	return options.get(word.lower())
 
 
-@tool(final_answer=True, route=_route_show_records)
+@tool(final_answer=True, route=_route_show_records, precheck=lambda args, context=None: _builtins()._unknown_doctype(args.get("doctype")))
 def show_records(
 	doctype: DocTypeArg,
 	names: Annotated[list[str] | None, "Record IDs; omit for a recent list."] = None,
