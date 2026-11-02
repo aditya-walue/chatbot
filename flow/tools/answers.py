@@ -553,7 +553,27 @@ def _below_reorder(levels: list[dict[str, Any]], quantities: dict[tuple[str, str
 	return sorted(low, key=lambda r: (r["have"] - float(r["level"] or 0), r["item"]))
 
 
-@tool(final_answer=True)
+# "which item is low in stock", "running out of stock", "what needs reordering". Not "how many
+# stock entries" or "what is stock": those name a record type or ask for a definition.
+LOW_STOCK_ASKED = re.compile(
+	r"\b(?:low|lowest|least|little|short|thin)\b[^.?!]{0,20}\bstocks?\b"
+	r"|\bstocks?\b[^.?!]{0,12}\b(?:is|are|runs?|running|getting)\b[^.?!]{0,12}\b(?:low|short|out)\b"
+	r"|\brun(?:ning|s)?\s+out\s+of\s+stock\b|\bout\s+of\s+stock\b|\bre-?order(?:ing)?\b|\bneeds?\s+restock",
+	re.IGNORECASE,
+)
+
+
+def low_stock_arguments(text: str) -> dict[str, Any] | None:
+	"""low_stock() arguments for a question about items running low, or None. Never an empty dict:
+	routers read that as "no match"."""
+	return {"limit": LIST_LIMIT} if LOW_STOCK_ASKED.search(text or "") else None
+
+
+@tool(
+	final_answer=True,
+	route=lambda text: low_stock_arguments(text),
+	laya=LayaRoute("RECORD_LOOKUP", lambda text, signals: low_stock_arguments(text)),
+)
 def low_stock(
 	limit: Annotated[int, "Most rows to show."] = LIST_LIMIT,
 ) -> dict[str, Any]:
@@ -613,7 +633,28 @@ def low_stock(
 # ── on_leave ──────────────────────────────────────────────────────────────────────────────
 
 
-@tool(final_answer=True)
+# "who is on leave today", "who is off tomorrow", "who is absent on leave".
+ON_LEAVE_ASKED = re.compile(
+	r"\bwho(?:'s|\s+is|\s+are)?\b[^.?!]{0,20}\b(?:on|in)\s+leave\b|\bwho(?:'s|\s+is|\s+are)?\s+(?:off|away|absent)\b"
+	r"|\b(?:on|in)\s+leave\s+(?:today|tomorrow|yesterday)\b",
+	re.IGNORECASE,
+)
+
+
+def on_leave_arguments(text: str) -> dict[str, Any] | None:
+	"""on_leave() arguments for "who is on leave (today|tomorrow|yesterday)", or None. The day is
+	always given, so the result is never an empty dict (routers read that as "no match")."""
+	if not ON_LEAVE_ASKED.search(text or ""):
+		return None
+	offset = {"tomorrow": 1, "yesterday": -1}.get(next(iter(re.findall(r"\b(tomorrow|yesterday)\b", text.lower())), ""), 0)
+	return {"date": str(frappe.utils.add_days(frappe.utils.nowdate(), offset))}
+
+
+@tool(
+	final_answer=True,
+	route=lambda text: on_leave_arguments(text),
+	laya=LayaRoute("RECORD_LOOKUP", lambda text, signals: on_leave_arguments(text)),
+)
 def on_leave(
 	date: Annotated[str | None, "Day to check, YYYY-MM-DD. Omit for today."] = None,
 ) -> dict[str, Any]:
