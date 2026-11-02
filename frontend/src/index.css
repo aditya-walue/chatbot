@@ -93,6 +93,37 @@
 	height: 1px;
 	background: linear-gradient(90deg, transparent, var(--outline-gray-2) 18%, var(--outline-gray-2) 82%, transparent);
 }
+/* The mark at the left of the header: the launcher's bubble on a navy tile. */
+.flow-header-tile {
+	display: inline-flex;
+	height: 42px;
+	width: 42px;
+	flex: none;
+	align-items: center;
+	justify-content: center;
+	border-radius: 13px;
+	background: var(--flow-user-bg);
+	color: #ffffff;
+	box-shadow: 0 6px 14px -8px rgb(47 80 138 / 0.6);
+}
+.flow-online {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	font-size: 14px;
+	font-weight: 500;
+	color: #2f8f5b;
+}
+.flow-online-dot {
+	height: 9px;
+	width: 9px;
+	border-radius: 50%;
+	background: #3fa56a;
+	box-shadow: 0 0 0 3px rgb(63 165 106 / 0.22);
+}
+[data-theme="dark"] .flow-online {
+	color: #5dc78a;
+}
 .flow-icon-btn {
 	display: inline-flex;
 	height: 32px;
