@@ -9,7 +9,10 @@ and every tool run **on the server**, as the logged-in user.
 `flow/api/api.py` (`start_run`, SSE) → `Flow Session.chat()` → agent loop `flow/lib/agent.py`.
 The loop picks who answers, first match wins:
 
-1. **Exact routes** — `Tool.route` regexes on the latest user message (greetings, "how many X",
+1. **Planner** (browser model) — a hidden one-word call reads each tool's description and names the tool
+   (or `none`); the model then fills in its arguments from that tool alone. It replaces step 2 below unless
+   `flow_planner` is off or the model runs on the server.
+2. **Exact routes** — `Tool.route` regexes on the latest user message (greetings, "how many X",
    "how to create X", "how to assign X to Y", "how to mark X as paid", "create X with …", "show/list X", "what is X", "what happens after X",
    pasted errors). Run the tool directly; no model call. DocType names are typo-tolerant.
 2. **Laya** (optional) — `flow/lib/laya_router.py` classifies intent; at confidence ≥
@@ -69,7 +72,7 @@ test_ai_assistant test_session test_ai_triggers test_ai_model test_knowledge tes
   messages and tool results, so `flow_opik_capture_content` false sends metadata only.
 - **Frappe loggers drop INFO by default**; `flow.laya` sets its own level explicitly.
 - **Site config switches**: `flow_laya_enabled`, `flow_laya_threshold`, `flow_laya_model_path`, `flow_laya_backend`, `flow_laya_cache_dir`, `flow_hf_token`,
-  `flow_webllm_strict_json` (default on), `flow_webllm_compact_context` (default on), `flow_scope_check` (default on), `flow_docs_pick` (default on), `flow_web_search_domains`,
+  `flow_webllm_strict_json` (default on), `flow_webllm_compact_context` (default on), `flow_scope_check` (default on), `flow_docs_pick` (default on), `flow_planner` (default on; off restores the exact routes), `flow_web_search_domains`,
   `flow_opik_enabled`, `flow_opik_project`, `flow_opik_url`, `flow_opik_api_key`, `flow_opik_workspace`, `flow_opik_capture_content`.
 
 ## Rules for changes

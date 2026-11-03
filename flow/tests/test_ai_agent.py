@@ -1246,6 +1246,48 @@ class TestDocsPick(IntegrationTestCase):
 		self.assertEqual((result["answer"], len(model.calls)), ("First section.\n\nSource: u1", 0))
 
 
+class TestPlanner(IntegrationTestCase):
+	"""The planner picks the tool in place of the exact routes; the model then fills in its arguments."""
+
+	def _run(self, replies, text="what is a purchase invoice?"):
+		from flow.lib.agent import Agent, Done
+		from flow.lib.tool import tool
+
+		@tool(route=lambda t: {"label": "routed"})
+		def alpha(label: str = "") -> dict:
+			"""Show the alpha records."""
+			return {"alpha": label}
+
+		@tool
+		def beta(label: str = "") -> dict:
+			"""Explain what a record type is."""
+			return {"beta": label}
+
+		model = FakeModel([r if isinstance(r, ChatResponse) else ChatResponse(content=r) for r in replies])
+		model.model_id = "webllm/test-model"
+		frappe.conf.flow_scope_check = 0
+		self.addCleanup(lambda: frappe.conf.pop("flow_scope_check", None))
+		events = list(Agent(model=model, tools=[alpha, beta]).run(text, stream=True))
+		return model, next(e.result for e in events if isinstance(e, Done))
+
+	def test_the_planned_tool_runs_instead_of_the_route(self):
+		call = ChatResponse(content="", tool_calls=[ToolCall(id="c1", name="beta", arguments={"label": "x"})])
+		model, result = self._run(["beta", call, "Done."])
+		self.assertEqual([c.name for c in result.tool_calls], ["beta"])
+		tools_seen = [t["function"]["name"] for t in model.calls[1]["tools"]]
+		self.assertEqual(tools_seen, ["beta"])
+
+	def test_none_leaves_it_to_the_model_with_every_tool(self):
+		model, result = self._run(["none", "Plain answer."])
+		self.assertEqual((result.output, result.tool_calls), ("Plain answer.", []))
+
+	def test_the_site_can_switch_the_planner_off(self):
+		frappe.conf.flow_planner = 0
+		self.addCleanup(lambda: frappe.conf.pop("flow_planner", None))
+		model, result = self._run(["Direct."])
+		self.assertEqual([c.name for c in result.tool_calls], ["alpha"])
+
+
 class TestApprovedWritesAreCommitted(IntegrationTestCase):
 	"""A write the user approved is committed before the model replies, not when the stream ends."""
 

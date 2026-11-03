@@ -416,8 +416,13 @@ class Agent:
 		executed_calls = executed_calls if executed_calls is not None else []
 		usage_total = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
-		routed = self._routed_response(messages) if route else None
-		if routed is None and route and (yield from self._outside_scope(messages)):
+		planner = route and self._plans()
+		routed = self._routed_response(messages, exact=not planner) if route else None
+		# The planner stands in for the exact routes: it names the tool, and the model fills in
+		# its arguments from a list of just that tool. Later steps see every tool again.
+		planned = (yield from self._plan(messages)) if planner and routed is None else None
+		first_schemas = [s for s in tool_schemas or [] if s["function"]["name"] == planned] or None
+		if routed is None and planned is None and route and (yield from self._outside_scope(messages)):
 			from flow.tools.web import OUT_OF_SCOPE
 
 			yield TextChunk(text=OUT_OF_SCOPE)
@@ -433,7 +438,9 @@ class Agent:
 			if routed is not None:
 				response, routed = routed, None
 			else:
-				response = yield from self._stream_model(*self._model_context(messages, tool_schemas))
+				response = yield from self._stream_model(
+					*self._model_context(messages, first_schemas if iteration == 1 and first_schemas else tool_schemas)
+				)
 			_accumulate_usage(usage_total, response.usage)
 			messages.append(_assistant_message(response))
 
@@ -660,6 +667,35 @@ class Agent:
 		except StopIteration as stop:
 			return (stop.value.content or "") if stop.value else ""
 
+	def _plans(self) -> bool:
+		"""Whether the planner picks the tool, in place of the exact routes: only for a browser
+		model, and not when the site turns `flow_planner` off."""
+		from flow.lib.webllm import is_browser_model
+
+		return bool(self.tools) and is_browser_model(getattr(self.model, "model_id", None)) and bool(
+			frappe.conf.get("flow_planner", True)
+		)
+
+	def _plan(self, messages: list[dict[str, Any]]) -> Generator[Event, None, str | None]:
+		"""The planner: a hidden choice of the one tool whose description fits the latest message,
+		read from the tools' own descriptions. None when no tool fits or the reply is unclear, so
+		the model answers as usual."""
+		users = [str(m.get("content") or "") for m in messages if m.get("role") == "user" and isinstance(m.get("content"), str)]
+		if not users or messages[-1].get("role") != "user":
+			return None
+		listing = "\n".join(f"{t.name}: {_brief(t.description)}" for t in self.tools)
+		earlier = f"Earlier message: {users[-2][:200]}\n" if len(users) > 1 else ""
+		page = f"Open page: {self.page['doctype']}\n" if (self.page or {}).get("doctype") else ""
+		names = [t.name for t in self.tools]
+		reply = yield from self._silent_choice(
+			PLANNER, f"{page}{earlier}Latest message: {users[-1][:400]}\n\nTools:\n{listing}", names + ["none"]
+		)
+		picked = reply.strip().split(" ")[0].strip(".:`\"'")
+		if picked in names:
+			self._trace_route("planner", picked, {})
+			return picked
+		return None
+
 	def _pick_option(self, messages: list[dict[str, Any]], result: dict[str, Any]) -> Generator[Event, None, dict[str, Any]]:
 		"""Let the browser model choose the answer among the docs sections a final-answer tool found
 		(`result["options"]`): matching words finds candidates, but only reading the question tells
@@ -726,7 +762,7 @@ class Agent:
 			error=error,
 		)
 
-	def _routed_response(self, messages: list[dict[str, Any]]) -> ChatResponse | None:
+	def _routed_response(self, messages: list[dict[str, Any]], *, exact: bool = True) -> ChatResponse | None:
 		"""A tool call for a user message one of the tools unmistakably answers (see Tool.route),
 		standing in for the model's first step."""
 		last = messages[-1] if messages else {}
@@ -737,7 +773,7 @@ class Agent:
 		# "why is this late?" is not a request to see the record (the model, told the page, is).
 		page_id = (self.page or {}).get("name")
 		added_id = bool(page_id) and page_id in text and page_id not in last["content"]
-		for tool in self.tools:
+		for tool in self.tools if exact else []:
 			if not tool.route:
 				continue
 			try:
@@ -991,6 +1027,19 @@ SCOPE_CHECK = (
 	"as a poem, a joke, general knowledge, maths, coding or career advice, weather, news or a "
 	"translation. If unsure, answer IN."
 )
+
+PLANNER = (
+	"You choose which tool answers the user's latest message. Each tool is listed as name: what it "
+	"does. Reply with the name of the one tool whose description fits what the user asks for, or "
+	"none if no tool fits. Choose by the meaning of the request, not by shared words."
+)
+
+
+def _brief(text: str, limit: int = 220) -> str:
+	"""A tool's description cut to what a one-line listing can hold."""
+	text = " ".join((text or "").split())
+	return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + "…"
+
 
 # The question the browser model is asked to pick the docs section that answers a how-to.
 DOCS_PICK = (
