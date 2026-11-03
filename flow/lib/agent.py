@@ -16,7 +16,7 @@ from frappe import _
 
 from flow.lib import tracing
 from flow.lib.model import ChatResponse, Model, ToolCall, ToolCallBegin
-from flow.lib.tool import Tool
+from flow.lib.tool import Problem, Tool, problem_payload
 
 if TYPE_CHECKING:
 	from flow.knowledge import Knowledge
@@ -235,7 +235,7 @@ class Agent:
 			tool = self._tools_by_name[call.name]
 			problem = tool.precheck(call.arguments, None) if tool.precheck else None
 			if problem:
-				return json.dumps({"error": problem})
+				return json.dumps(problem_payload(problem))
 			result = self._run_tool(call)
 			return _serialize_tool_result(result)
 		if answer == "Deny":
@@ -839,7 +839,7 @@ class Agent:
 			problem = _unmentioned(tool, call.arguments, messages, self.page)
 		if problem:
 			self._trace.span(call.name, type="tool", input=call.arguments, started=tracing.now(), error=problem)
-			return json.dumps({"error": problem})
+			return json.dumps(problem_payload(problem))
 		if tool.requires_confirmation and not self.auto_approve:
 			return _confirmation_question(call, tool)
 		return self._run_tool(call)
@@ -1065,9 +1065,9 @@ def _unmentioned(tool: Tool, arguments: dict[str, Any], messages: list[dict[str,
 	words = [w for w in value.lower().replace("-", " ").split() if w]
 	if all((w[:-1] if len(w) > 3 and w.endswith("s") else w) in seen for w in words):
 		return None
-	return (
-		f"Nobody mentioned {value!r}. Do not guess: ask the user which {tool.named_in_conversation} they mean, "
-		"or use the one they named."
+	return Problem(
+		f"{value!r} was not mentioned in this conversation.",
+		f"Do not guess: ask the user which {tool.named_in_conversation} they mean, or use the one they named.",
 	)
 
 

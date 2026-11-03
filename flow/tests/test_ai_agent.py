@@ -1099,7 +1099,8 @@ class TestGuessedArguments(IntegrationTestCase):
 
 	def test_an_unmentioned_doctype_is_refused_so_the_model_asks(self):
 		result = self._invoke("call_1", "ToDo", "what is this")
-		self.assertIn("Nobody mentioned", result["error"])
+		self.assertIn("was not mentioned", result["error"])
+		self.assertIn("ask the user which doctype", result["next"])
 
 	def test_a_doctype_the_user_named_in_any_form_is_answered(self):
 		for text in ("what is a todo", "explain todos please"):

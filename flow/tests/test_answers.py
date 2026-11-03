@@ -311,7 +311,7 @@ class TestListPhrasing(IntegrationTestCase):
 		self.assertIsNone(_precheck_query(args))
 		self.assertEqual(args["filters"], {"status": "Open"})
 		bad = {"doctype": "ToDo", "filters": {"todo_state": "purple"}}
-		self.assertIn("one of: Open", _precheck_query(bad))
+		self.assertIn("one of: Open", _precheck_query(bad).advice)
 
 	def test_plain_noun_picks_the_record_type(self):
 		if not frappe.db.exists("DocType", "Sales Invoice"):

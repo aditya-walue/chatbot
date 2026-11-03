@@ -13,7 +13,7 @@ import frappe
 from frappe.model import child_table_fields, default_fields, optional_fields
 from frappe import _
 
-from flow.lib.tool import LayaRoute, LayaSignals, Tool, tool
+from flow.lib.tool import LayaRoute, LayaSignals, Problem, Tool, tool
 from flow.utils.safe_exec import safe_exec
 
 MAX_READ_LIMIT = 200
@@ -269,9 +269,9 @@ def _precheck_query(args: dict[str, Any]) -> str | None:
 			if status and status.fieldtype == "Select" and status.options
 			else ""
 		)
-		return (
-			f"Not fields of {doctype}: {', '.join(unknown)}. `filters` only holds field conditions "
-			'like {"status": "Paid"}; put order_by, fields and limit beside it.' + hint
+		return Problem(
+			f"Not fields of {doctype}: {', '.join(unknown)}.",
+			'`filters` only holds field conditions like {"status": "Paid"}; put order_by, fields and limit beside it.' + hint,
 		)
 	return None
 
@@ -307,7 +307,7 @@ def _unknown_doctype(doctype: Any) -> str | None:
 	keyed = {name.lower().replace(" ", "_"): name for name in _doctype_names().values()}
 	close = [keyed[key] for key in _similar_names(doctype, list(keyed))]
 	hint = f" Did you mean {', '.join(close)}?" if close else ""
-	return f"{doctype!r} is not a record type on this site.{hint} Use find_doctypes to look one up."
+	return Problem(f"{doctype!r} is not a record type on this site.{hint}", "Use find_doctypes to look one up.")
 
 
 # Columns Frappe adds to every record or child row (parent, _assign, _comments, ...): valid in `fields`.
@@ -331,7 +331,7 @@ def _unknown_columns(doctype: str, fields: Any) -> str | None:
 	parts = []
 	for name in unknown:
 		parts.append(repr(name) + _did_you_mean(name, names))
-	return f"Not fields of {doctype}: {', '.join(parts)}. describe() the DocType for its fieldnames."
+	return Problem(f"Not fields of {doctype}: {', '.join(parts)}.", "describe() the DocType for its fieldnames.")
 
 
 def _select_field_for_value(meta: Any, value: Any) -> str | None:
@@ -1254,9 +1254,10 @@ def _precheck_create(args: dict[str, Any], context: str | None = None) -> str | 
 	if isinstance(records, list):
 		args["records"] = records = [_normalize_values(args.get("doctype"), r) for r in records]
 	if not isinstance(records, list) or not records or not all(isinstance(r, dict) and r for r in records):
-		return (
+		return Problem(
+			"No field values were given for the new record.",
 			"records must be a non-empty list of field-value objects. describe() the DocType for its "
-			"required fields and ask the user for any values you don't have before calling create."
+			"required fields and ask the user for any values you don't have before calling create.",
 		)
 	for row, values in enumerate(records):
 		try:
@@ -1358,7 +1359,7 @@ def _unknown_fields_error(doctype: str | None, records: list[dict[str, Any]]) ->
 		problems += _unknown_in(doctype, record)
 	if not problems:
 		return None
-	return "Unknown fields: " + "; ".join(problems) + ". Use the fieldnames from describe, then call again."
+	return Problem("Unknown fields: " + "; ".join(problems) + ".", "Use the fieldnames from describe, then call again.")
 
 
 def _unknown_in(doctype: str, values: dict[str, Any]) -> list[str]:
@@ -1415,7 +1416,7 @@ def _resolve_links_error(doctype: str | None, records: list[dict[str, Any]]) -> 
 		problems += _resolve_links_in(doctype, record)
 	if not problems:
 		return None
-	return "; ".join(problems) + ". Look the record up with read or ask the user, then call again."
+	return Problem("; ".join(problems) + ".", "Look the record up with read or ask the user, then call again.")
 
 
 def _resolve_links_in(doctype: str, values: dict[str, Any]) -> list[str]:
@@ -1477,9 +1478,9 @@ def _missing_required_error(doctype: str | None, records: list[dict[str, Any]]) 
 				values[fieldname] = only
 		missing = [f.label or f.fieldname for f in required if values.get(f.fieldname) in (None, "")]
 		if missing:
-			return (
-				f"Row {row} is missing required fields: {', '.join(missing)}. Ask the user for these "
-				"values (all of them in one message), then call create again."
+			return Problem(
+				f"Row {row} is missing required fields: {', '.join(missing)}.",
+				"Ask the user for these values (all of them in one message), then call create again.",
 			)
 	return None
 
@@ -1520,9 +1521,10 @@ def _update_to_create(args: dict[str, Any]) -> tuple[str, dict[str, Any]] | None
 def _precheck_names(args: dict[str, Any], context: str | None = None) -> str | None:
 	names = args.get("names")
 	if not isinstance(names, list) or not names:
-		return (
+		return Problem(
+			"No record IDs were given.",
 			"names must be a non-empty list of existing record IDs (from show_records or read). "
-			"To make a NEW record, call create instead."
+			"To make a NEW record, call create instead.",
 		)
 	doctype = args.get("doctype") or ""
 	if not frappe.db.exists("DocType", doctype):
@@ -1538,10 +1540,10 @@ def _precheck_names(args: dict[str, Any], context: str | None = None) -> str | N
 	args["names"] = names = resolved
 	missing = [n for n in names if not frappe.db.exists(doctype, {"name": n})]
 	if missing:
-		return (
-			f"No {doctype} record with ID {', '.join(map(repr, missing))}. This tool only works on "
-			"existing records. To make a NEW record, call create(doctype, records=[{...}]) with the "
-			"values the user gave; to find existing IDs, use count or read."
+		return Problem(
+			f"No {doctype} record with ID {', '.join(map(repr, missing))}.",
+			"This tool only works on existing records. To make a NEW record, call create(doctype, "
+			"records=[{...}]) with the values the user gave; to find existing IDs, use count or read.",
 		)
 	return None
 
@@ -1585,10 +1587,10 @@ def _ungrounded_error(doctype: str | None, records: list[Any], context: str | No
 	if not invented:
 		return None
 	date_format = frappe.db.get_single_value("System Settings", "date_format") or "yyyy-mm-dd"
-	return (
-		f"These values were not given by the user or found by a tool: {', '.join(invented)}. "
+	return Problem(
+		f"These values were not given by the user or found by a tool: {', '.join(invented)}.",
 		"Never make up or guess data — ask the user for these values, then call again. "
-		f"Write dates as YYYY-MM-DD; the user types dates as {date_format}."
+		f"Write dates as YYYY-MM-DD; the user types dates as {date_format}.",
 	)
 
 

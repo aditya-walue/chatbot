@@ -333,7 +333,9 @@ class TestWritePrecheck(IntegrationTestCase):
 
 	def test_empty_create_is_rejected_before_confirmation(self):
 		result = self._invoke(create, {"doctype": "ToDo", "records": [{}]})
-		self.assertIn("non-empty list", json.loads(result)["error"])
+		result = json.loads(result)
+		self.assertIn("No field values", result["error"])
+		self.assertIn("non-empty list", result["next"])
 
 	def test_misplaced_child_fields_are_rejected_before_confirmation(self):
 		result = self._invoke(create, {"doctype": "Note", "records": [{"title": "x", "user": "Administrator"}]})
@@ -341,7 +343,9 @@ class TestWritePrecheck(IntegrationTestCase):
 
 	def test_empty_names_are_rejected_before_confirmation(self):
 		result = self._invoke(delete, {"doctype": "ToDo", "names": []})
-		self.assertIn("names must be", json.loads(result)["error"])
+		result = json.loads(result)
+		self.assertIn("No record IDs", result["error"])
+		self.assertIn("names must be", result["next"])
 
 	def test_single_record_object_is_wrapped_in_a_list(self):
 		from flow.lib.agent import Question
@@ -490,9 +494,9 @@ class TestRunActionPrecheck(IntegrationTestCase):
 		return agent._invoke(ToolCall(id="c1", name="run_action", arguments=arguments), [])
 
 	def test_missing_record_points_to_create(self):
-		error = json.loads(self._invoke({"doctype": "ToDo", "names": ["Nobody Known"], "action": "submit"}))["error"]
-		self.assertIn("No ToDo record with ID 'Nobody Known'", error)
-		self.assertIn("call create", error)
+		result = json.loads(self._invoke({"doctype": "ToDo", "names": ["Nobody Known"], "action": "submit"}))
+		self.assertIn("No ToDo record with ID 'Nobody Known'", result["error"])
+		self.assertIn("call create", result["next"])
 
 	def test_unavailable_action_lists_the_valid_ones(self):
 		todo = frappe.get_doc({"doctype": "ToDo", "description": "run action probe"}).insert()
@@ -840,7 +844,7 @@ class TestUnknownRecordType(IntegrationTestCase):
 		error = _unknown_doctype("Todo Item")
 		self.assertIn("'Todo Item' is not a record type on this site.", error)
 		self.assertIn("ToDo", error)
-		self.assertIn("find_doctypes", error)
+		self.assertIn("find_doctypes", error.advice)
 
 	def test_a_real_or_missing_name_is_not_an_error(self):
 		from flow.tools.builtins import _unknown_doctype
@@ -896,3 +900,36 @@ class TestFindDoctypesRanking(IntegrationTestCase):
 		self.assertTrue(found)
 		self.assertEqual(found[0]["name"], "Note")
 		self.assertEqual(set(found[0]), {"name", "module"})
+
+
+class TestProblemsReadAsPlainStatements(IntegrationTestCase):
+	"""What a tool call is refused for is a statement a person can read; advice is for the model."""
+
+	def test_a_missing_required_field_names_the_fields_and_keeps_the_instruction_apart(self):
+		from flow.lib.tool import problem_payload
+		from flow.tools.builtins import _precheck_create
+
+		problem = _precheck_create({"doctype": "Item", "records": [{"item_name": "Zz Probe Item"}]})
+		self.assertIn("missing required fields: Item Code", str(problem))
+		for wording in ("call create", "Ask the user", "describe(", "find_doctypes"):
+			self.assertNotIn(wording, str(problem))
+		payload = problem_payload(problem)
+		self.assertEqual(payload["error"], str(problem))
+		self.assertIn("call create again", payload["next"])
+
+	def test_the_shown_error_is_the_statement_only(self):
+		from flow.lib.agent import _error_text
+		from flow.lib.tool import problem_payload
+		import json
+
+		from flow.tools.builtins import _unknown_doctype
+
+		problem = _unknown_doctype("Todo Item")
+		self.assertNotIn("find_doctypes", _error_text(json.dumps(problem_payload(problem))))
+		self.assertIn("find_doctypes", problem_payload(problem)["next"])
+
+	def test_a_problem_without_advice_has_no_next(self):
+		from flow.lib.tool import Problem, problem_payload
+
+		self.assertEqual(problem_payload(Problem("Plain.")), {"error": "Plain."})
+		self.assertEqual(problem_payload("A plain string"), {"error": "A plain string"})

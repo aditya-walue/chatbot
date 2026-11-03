@@ -22,6 +22,26 @@ _PRIMITIVE_SCHEMAS: dict[type, dict[str, str]] = {
 }
 
 
+class Problem(str):
+	"""What is wrong with a tool call, as a plain statement a person can read, with `advice` for
+	the model on what to do next. The statement is the error shown to the user if the model
+	cannot fix it; the advice goes only to the model, which keeps tool and function names out of
+	what people read."""
+
+	advice: str
+
+	def __new__(cls, fact: str, advice: str = "") -> "Problem":
+		problem = super().__new__(cls, fact)
+		problem.advice = advice
+		return problem
+
+
+def problem_payload(problem: str) -> dict[str, str]:
+	"""The tool result for a problem: {"error": statement[, "next": advice]}."""
+	advice = getattr(problem, "advice", "")
+	return {"error": str(problem), **({"next": advice} if advice else {})}
+
+
 @dataclass(frozen=True)
 class LayaSignals:
 	"""What Laya said about a message besides its intent, for a tool deciding whether to take it."""
