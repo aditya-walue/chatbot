@@ -44,6 +44,7 @@ class TestAnswerRoutes(IntegrationTestCase):
 		self.assertEqual(_route_show_records("show open todos"), {"doctype": "ToDo", "filters": {"status": "Open"}})
 		self.assertIsNone(_route_show_records("show broken todos"))
 		self.assertIsNone(_route_show_records("list all widgets"))
+		self.assertIsNone(_route_show_records("what is a todo?"))
 
 	def test_show_records_formats_from_live_data(self):
 		todo = frappe.get_doc({"doctype": "ToDo", "description": "answers probe"}).insert()

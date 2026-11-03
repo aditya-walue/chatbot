@@ -101,6 +101,10 @@ def _route_show_records(text: str) -> dict[str, Any] | None:
 	match = LIST_REQUEST.match(text or "")
 	if not match:
 		return None
+	# "what is a purchase invoice" asks for a definition. Route order is stored per site and only
+	# changes on migrate, so don't rely on explain_doctype being listed first.
+	if _route_explain_doctype(text):
+		return None
 	return _list_arguments(match.group("rest"), match.group("order"))
 
 
