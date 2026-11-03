@@ -852,7 +852,8 @@ class Agent:
 			result = tool(**call.arguments)
 		except Exception as e:
 			self._trace.span(call.name, type="tool", input=call.arguments, started=started, error=e)
-			return json.dumps({"error": str(e)[:ERROR_MESSAGE_LIMIT]})
+			payload = problem_payload(e)
+			return json.dumps({**payload, "error": payload["error"][:ERROR_MESSAGE_LIMIT]})
 		self._trace.span(call.name, type="tool", input=call.arguments, output=result, started=started)
 		if tool.requires_confirmation:
 			_save_write()
@@ -935,8 +936,8 @@ TOOL_GROUPS: tuple[tuple[re.Pattern, tuple[str, ...]], ...] = tuple(
 	)
 )
 # Looking things up is what the model falls back on when no specific intent matched.
-DEFAULT_TOOLS = ("show_records", "count", "low_stock", "on_leave", "where_to_find", "read", "find_doctypes")
-MAX_TOOLS = 7
+DEFAULT_TOOLS = ("show_records", "count", "total", "low_stock", "on_leave", "where_to_find", "read", "find_doctypes")
+MAX_TOOLS = 8
 # Always offered beside the chosen tools: the fallback when none of them can answer.
 FALLBACK_TOOLS = ("docs_howto", "frappe_docs", "web_search")
 RECENT_USER_TURNS = 2

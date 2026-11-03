@@ -1897,6 +1897,7 @@ from flow.tools.answers import (  # noqa: E402
 	on_leave,
 	show_records,
 	status_steps,
+	total,
 	where_to_find,
 )
 from flow.tools.diagnosis import error_diagnosis  # noqa: E402
@@ -1912,6 +1913,7 @@ BUILTIN_TOOLS: list[Tool] = [
 	where_to_find,
 	low_stock,
 	on_leave,
+	total,
 	explain_doctype,
 	document_flow,
 	show_records,

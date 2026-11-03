@@ -28,7 +28,7 @@ import frappe
 from frappe import _
 from frappe.utils import get_url_to_form, get_url_to_list, get_url_to_workspace
 
-from flow.lib.tool import LayaRoute, tool
+from flow.lib.tool import LayaRoute, ToolError, tool
 
 # builtins imports this module to register its tools, so its helpers are imported inside the
 # functions below rather than at the top (which would be circular).
@@ -50,6 +50,7 @@ MAX_ACCESS_ROWS = 5000  # most rows read when matching a name to roles or users
 MAX_STOCK_ROWS = 5000  # most reorder levels / stock records low_stock reads
 MAX_RECORD_TYPE_WORDS = 4  # words of a record type's name
 MAX_UNAPPLIED_WORDS = 3  # leftover words of a list request that may be passed over
+MAX_FIELDS_NAMED = 12  # field names an error lists
 # The most records one list shows, whatever limit is asked for.
 LIST_ALL_LIMIT = 200
 MAIN_FIELDS_LIMIT = 6
@@ -191,6 +192,21 @@ def list_target(phrase: str, scope: set[str] | None = None) -> dict[str, Any] | 
 		status = doctype and _status_value(doctype, word)
 		if status:
 			return {"doctype": doctype, "filters": {"status": status}}
+	return _with_trailing_status(words, scope)
+
+
+def _with_trailing_status(words: list[str], scope: set[str] | None) -> dict[str, Any] | None:
+	"""A record type followed by a clause that ends in one of its statuses ("sales orders in
+	draft", "issues that are open"): the status is read from the record type's own status values,
+	so no status word is listed here. Other words in the clause are passed over."""
+	for size in range(min(MAX_RECORD_TYPE_WORDS, len(words) - 1), 0, -1):
+		doctype = _record_type(words[:size], scope=scope)
+		tail = words[size:]
+		if not doctype or len(tail) > MAX_UNAPPLIED_WORDS + 1:
+			continue
+		statuses = [v for v in (_status_value(doctype, w) for w in tail) if v]
+		if len(statuses) == 1:
+			return {"doctype": doctype, "filters": {"status": statuses[0]}}
 	return None
 
 
@@ -648,6 +664,62 @@ def on_leave(
 	return {
 		"answer": f"**{len(rows)} {'person is' if len(rows) == 1 else 'people are'} on approved leave {label}:**\n\n"
 		f"| Employee | Leave type | Dates |\n|---|---|---|\n{lines}"
+	}
+
+
+# ── total ─────────────────────────────────────────────────────────────────────────────────
+
+
+NUMERIC_FIELDTYPES = ("Currency", "Float", "Int", "Percent")
+
+
+def _amount_field(doctype: str) -> str | None:
+	"""The field a bare "total of all <records>" means: the DocType's amount shown in its list view,
+	else its first currency field. None when it has no numeric field to add up."""
+	fields = [f for f in frappe.get_meta(doctype).fields if f.fieldtype == "Currency" and not f.hidden]
+	listed = [f for f in fields if f.in_list_view]
+	chosen = (listed or fields or [None])[0]
+	return chosen.fieldname if chosen else None
+
+
+@tool(final_answer=True, precheck=lambda args, context=None: _builtins()._precheck_query(args))
+def total(
+	doctype: DocTypeArg,
+	field: Annotated[str | None, 'Numeric fieldname to add up, e.g. "grand_total". Omit for the amount the record type is known by.'] = None,
+	filters: FiltersArg = None,
+) -> dict[str, Any]:
+	"""The sum of one numeric field over the records that match, with their count. Use for "total of
+	all sales invoices", "how much is outstanding", "sum of ...". Changes nothing."""
+	if not frappe.has_permission(doctype, "read"):
+		raise PermissionError(f"No permission to read {doctype}")
+	meta = frappe.get_meta(doctype)
+	if meta.issingle:
+		raise ValueError(f"{doctype} is a single settings page, not a list of records; there is nothing to add up.")
+	field = field or _amount_field(doctype)
+	if not field:
+		raise ValueError(f"{doctype} has no amount field to add up.")
+	chosen = meta.get_field(field)
+	if not chosen or chosen.fieldtype not in NUMERIC_FIELDTYPES:
+		numeric = [f.fieldname for f in meta.fields if f.fieldtype in NUMERIC_FIELDTYPES]
+		raise ToolError(
+			f"{field!r} is not a numeric field of {doctype}.",
+			"Numeric fields: " + ", ".join(numeric[:MAX_FIELDS_NAMED]) + ". describe() the DocType for the rest.",
+		)
+	rows = frappe.get_list(
+		doctype, filters=_tidy_filters(doctype, filters), fields=[{"SUM": field, "as": "total"}, {"COUNT": "*", "as": "count"}]
+	)
+	count = int(rows[0]["count"]) if rows else 0
+	amount = float(rows[0]["total"] or 0) if rows else 0.0
+	shown = frappe.utils.fmt_money(amount, currency=frappe.defaults.get_global_default("currency")) if chosen.fieldtype == "Currency" else _fmt(amount)
+	qualifier = " ".join(f"{k} = {v}" for k, v in (filters or {}).items())
+	return {
+		"doctype": doctype,
+		"field": field,
+		"total": amount,
+		"count": count,
+		"answer": f"**{shown}** — {chosen.label or field} across {count} {doctype} record{'s' if count != 1 else ''}"
+		+ (f" ({qualifier})" if qualifier else "")
+		+ ".",
 	}
 
 

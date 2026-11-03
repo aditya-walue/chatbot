@@ -36,8 +36,17 @@ class Problem(str):
 		return problem
 
 
-def problem_payload(problem: str) -> dict[str, str]:
-	"""The tool result for a problem: {"error": statement[, "next": advice]}."""
+class ToolError(ValueError):
+	"""A tool that cannot do what it was asked, raised with a plain statement a person can read and
+	`advice` for the model (see Problem, for refusals decided before a tool runs)."""
+
+	def __init__(self, fact: str, advice: str = ""):
+		super().__init__(fact)
+		self.advice = advice
+
+
+def problem_payload(problem: str | BaseException) -> dict[str, str]:
+	"""The tool result for a problem or ToolError: {"error": statement[, "next": advice]}."""
 	advice = getattr(problem, "advice", "")
 	return {"error": str(problem), **({"next": advice} if advice else {})}
 

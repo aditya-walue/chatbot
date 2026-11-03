@@ -254,6 +254,58 @@ class TestLowStockAndLeave(IntegrationTestCase):
 			on_leave.func(date="not a date")
 
 
+class TestTotalsAndTrailingStatus(IntegrationTestCase):
+	def test_a_status_after_the_record_type_filters_by_it(self):
+		from flow.tools.answers import count_arguments, list_target
+
+		self.assertEqual(list_target("todos in open"), {"doctype": "ToDo", "filters": {"status": "Open"}})
+		self.assertEqual(list_target("todos that are closed"), {"doctype": "ToDo", "filters": {"status": "Closed"}})
+		self.assertEqual(count_arguments("how many todos are in open"), {"doctype": "ToDo", "filters": {"status": "Open"}})
+		# No status among the words, or a clause too long to be filler: left to the model.
+		self.assertIsNone(list_target("todos in a hurry"))
+		self.assertIsNone(list_target("todos that are open closed and cancelled all at the same time"))
+
+	def test_the_amount_field_is_a_listed_currency_field_else_the_first_one(self):
+		from flow.tools.answers import _amount_field
+
+		self.assertIsNone(_amount_field("ToDo"))  # nothing to add up
+		if frappe.db.exists("DocType", "Sales Invoice"):
+			field = frappe.get_meta("Sales Invoice").get_field(_amount_field("Sales Invoice"))
+			self.assertEqual(field.fieldtype, "Currency")
+
+	def test_total_adds_the_field_over_the_matching_records(self):
+		from unittest.mock import patch
+
+		from flow.tools.answers import total
+
+		if not frappe.db.exists("DocType", "Sales Invoice"):
+			self.skipTest("needs accounts")
+		with patch("frappe.get_list", return_value=[{"total": 1234.5, "count": 3}]) as got:
+			result = total.func(doctype="Sales Invoice", field="grand_total", filters={"status": "Paid"})
+		self.assertEqual((result["total"], result["count"]), (1234.5, 3))
+		self.assertIn("across 3 Sales Invoice records", result["answer"])
+		self.assertIn("status = Paid", result["answer"])
+		self.assertEqual(got.call_args.kwargs["fields"], [{"SUM": "grand_total", "as": "total"}, {"COUNT": "*", "as": "count"}])
+
+	def test_total_names_the_numeric_fields_when_the_field_is_not_numeric(self):
+		from flow.lib.tool import ToolError
+		from flow.tools.answers import total
+
+		with self.assertRaises(ValueError):
+			total.func(doctype="ToDo")  # no amount field at all
+		with self.assertRaises(ToolError) as caught:
+			total.func(doctype="ToDo", field="description")
+		self.assertEqual(str(caught.exception), "'description' is not a numeric field of ToDo.")
+		self.assertIn("describe()", caught.exception.advice)
+
+	def test_total_is_offered_to_the_model(self):
+		from flow.lib.agent import DEFAULT_TOOLS
+		from flow.tools.builtins import BUILTIN_TOOLS
+
+		self.assertIn("total", [t.name for t in BUILTIN_TOOLS])
+		self.assertIn("total", DEFAULT_TOOLS)
+
+
 class TestStatusSteps(IntegrationTestCase):
 	"""status_steps explains how a record reaches a status, from its metadata."""
 

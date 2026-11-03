@@ -1351,3 +1351,29 @@ class TestRepeatedFailures(IntegrationTestCase):
 		result = Agent(model=model, tools=[always_fails], max_iterations=8).run("do it")
 		self.assertEqual(result.output, "That did not work: Stock Balance is not a record type.")
 		self.assertEqual(len(model.calls), 3)  # stopped after three, not eight
+
+
+class TestToolErrorsCarryAdviceApart(IntegrationTestCase):
+	def test_a_tool_error_with_advice_gives_a_statement_and_a_next_step(self):
+		import json
+
+		from flow.lib.agent import Agent
+		from flow.lib.tool import ToolError, tool
+
+		@tool
+		def refuses() -> dict:
+			"""Refuses."""
+			raise ToolError("That cannot be done.", "Try the other tool.")
+
+		@tool
+		def breaks() -> dict:
+			"""Breaks."""
+			raise ValueError("Plain failure.")
+
+		agent = Agent(model=FakeModel([]), tools=[refuses, breaks])
+		from flow.lib.agent import ToolCall
+
+		first = json.loads(agent._run_tool(ToolCall(id="a", name="refuses", arguments={})))
+		self.assertEqual(first, {"error": "That cannot be done.", "next": "Try the other tool."})
+		second = json.loads(agent._run_tool(ToolCall(id="b", name="breaks", arguments={})))
+		self.assertEqual(second, {"error": "Plain failure."})
