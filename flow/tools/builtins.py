@@ -757,7 +757,7 @@ def count(
 		return _grouped_count(doctype, filters, group_by)
 	rows = frappe.get_list(doctype, filters=filters, fields=[{"COUNT": "*", "as": "count"}])
 	total = int(rows[0]["count"]) if rows else 0
-	return {"doctype": doctype, "count": total, "answer": _count_answer(doctype, total)}
+	return {"doctype": doctype, "count": total, "answer": _count_answer(doctype, total, filters)}
 
 
 # "how many employees (are there)?" / "how many sales invoices in the system"
@@ -978,12 +978,15 @@ def _grouped_count(doctype: str, filters: dict | None, group_by: str) -> dict[st
 	return {"doctype": doctype, "count": total, "groups": groups, "answer": answer}
 
 
-def _count_answer(doctype: str, total: int) -> str:
-	"""The number only; the records themselves are show_records' job."""
+def _count_answer(doctype: str, total: int, filters: dict | None = None) -> str:
+	"""The number only; the records themselves are show_records' job. A filtered count says which
+	records it counted, so "4 Sales Invoice records" is not read as all of them."""
+	qualifier = " ".join(f"{k} = {v}" for k, v in (filters or {}).items() if isinstance(filters, dict))
+	suffix = f" where {qualifier}" if qualifier else ""
 	if not total:
-		return f"There are no **{doctype}** records."
+		return f"There are no **{doctype}** records{suffix}."
 	noun = doctype if total == 1 else f"{doctype} records"
-	return f"There {'is' if total == 1 else 'are'} **{total}** {noun}."
+	return f"There {'is' if total == 1 else 'are'} **{total}** {noun}{suffix}."
 
 
 def _batch_display_names(doctype: str, names: list[str]) -> dict[str, str]:
