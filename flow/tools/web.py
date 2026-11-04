@@ -343,8 +343,36 @@ def _answering_section(topic: str) -> dict[str, Any] | None:
 		if key not in seen:
 			seen.add(key)
 			chosen.append(row)
-	chosen = chosen[:DOCS_OPTIONS]
+	chosen = _by_distinctive_words(chosen[:DOCS_OPTIONS], topic)
 	return {"sections": [{"page": page, "heading": heading, "text": text} for _score, page, heading, text in chosen]}
+
+
+def _distinctive_words(sections: list[dict[str, Any]], topic: str) -> set[str]:
+	"""The topic's longer words (first five letters) that name fewer than half of the candidate
+	pages, in a page title or section heading: the words that tell the candidates apart
+	("discount" among pages that nearly all name the sales order)."""
+	words = {w[:5] for w in re.findall(r"[a-z]+", str(topic).lower()) if len(w) >= 4}
+	heads: dict[str, str] = {}
+	for s in sections:
+		url = s["page"]["url"]
+		heads[url] = f"{heads.get(url, '')} {s['page'].get('title') or ''} {s['heading'] or ''}".lower()
+	return {w for w in words if 0 < sum(w in h for h in heads.values()) * 2 < len(heads)}
+
+
+def _by_distinctive_words(chosen: list[Any], topic: str) -> list[Any]:
+	"""The candidate sections with the ones whose title and heading hold the distinguishing words
+	of the question first, the search's order kept among equals."""
+	sections = [{"page": page, "heading": heading, "text": text} for _score, page, heading, text in chosen]
+	words = _distinctive_words(sections, topic)
+	if not words:
+		return chosen
+
+	def held(i: int) -> int:
+		s = sections[i]
+		head = f"{s['page'].get('title') or ''} {s['heading'] or ''}".lower()
+		return -sum(w in head for w in words)
+
+	return [chosen[i] for i in sorted(range(len(chosen)), key=held)]
 
 
 def _format_section(section: dict[str, Any]) -> str:
@@ -377,7 +405,7 @@ def docs_howto(
 		"page": {"title": best["page"].get("title") or "page", "url": best["page"]["url"]},
 		"answer": _format_section(best),
 		# The section's own heading names everything asked: no doubt it is the answer.
-		"confident": _heading_covers(best["heading"], topic),
+		"confident": _heading_covers(best["heading"], topic) or _tells_apart(best, found["sections"], topic),
 	}
 	if not result["confident"]:
 		# The sections that fit the words best, even a single one: a model that reads the question
@@ -385,6 +413,20 @@ def docs_howto(
 		# match is the answer.
 		result["options"] = [{"label": _option_label(s), "answer": _format_section(s)} for s in found["sections"]]
 	return result
+
+
+def _tells_apart(best: dict[str, Any], sections: list[dict[str, Any]], topic: str) -> bool:
+	"""Whether the best section's page is the only one with a section whose title and heading hold
+	every distinguishing word of the question, so no model needs to choose."""
+	words = _distinctive_words(sections, topic)
+	if not words:
+		return False
+
+	def holds(s: dict[str, Any]) -> bool:
+		head = f"{s['page'].get('title') or ''} {s['heading'] or ''}".lower()
+		return all(w in head for w in words)
+
+	return holds(best) and len({s['page']['url'] for s in sections if holds(s)}) == 1
 
 
 def _heading_covers(heading: str | None, topic: str) -> bool:

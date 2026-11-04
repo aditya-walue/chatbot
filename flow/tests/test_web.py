@@ -471,3 +471,33 @@ class TestDocsCache(IntegrationTestCase):
 		_cached_many("probe", ["a"], lambda key: calls.append(key) or "x")
 		_cached_many("probe", ["a"], lambda key: calls.append(key) or "x")
 		self.assertEqual(calls, ["a", "a"])
+
+
+class TestDistinguishingWords(IntegrationTestCase):
+	"""Among sections that mostly name the same document, the words few pages hold pick the answer."""
+
+	def _sections(self):
+		def section(url, title, heading):
+			return {"page": {"url": url, "title": title}, "heading": heading, "text": "x"}
+
+		return [
+			section("u/order", "Sales Order", "Create a Sales Order"),
+			section("u/order", "Sales Order", "Important fields"),
+			section("u/discount", "Applying a Discount", "Apply a discount to one item"),
+			section("u/type", "Sales Order Type", "How to choose the right Sales Order type"),
+		]
+
+	def test_words_few_pages_hold_tell_the_sections_apart(self):
+		from flow.tools.web import _distinctive_words
+
+		self.assertEqual(_distinctive_words(self._sections(), "how to apply a discount on a sales order"), {"apply", "disco"})
+
+	def test_the_one_page_holding_them_all_is_the_answer_without_asking_a_model(self):
+		from flow.tools.web import _by_distinctive_words, _tells_apart
+
+		sections = self._sections()
+		topic = "how to apply a discount on a sales order"
+		ranked = _by_distinctive_words([(0, s["page"], s["heading"], s["text"]) for s in sections], topic)
+		self.assertEqual(ranked[0][1]["url"], "u/discount")
+		self.assertTrue(_tells_apart(sections[2], sections, topic))
+		self.assertFalse(_tells_apart(sections[0], sections, topic))
