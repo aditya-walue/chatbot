@@ -669,11 +669,12 @@ class Agent:
 
 	def _plans(self) -> bool:
 		"""Whether the planner picks the tool, in place of the exact routes: only for a browser
-		model, and not when the site turns `flow_planner` off."""
+		model, and only when the site turns `flow_planner` on: the 3B model picked worse than the
+		exact routes did (definitions, "is there any X", dates, record types), so it is opt-in."""
 		from flow.lib.webllm import is_browser_model
 
 		return bool(self.tools) and is_browser_model(getattr(self.model, "model_id", None)) and bool(
-			frappe.conf.get("flow_planner", True)
+			frappe.conf.get("flow_planner", False)
 		)
 
 	def _plan(self, messages: list[dict[str, Any]]) -> Generator[Event, None, str | None]:

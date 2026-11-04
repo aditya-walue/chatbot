@@ -1249,7 +1249,7 @@ class TestDocsPick(IntegrationTestCase):
 class TestPlanner(IntegrationTestCase):
 	"""The planner picks the tool in place of the exact routes; the model then fills in its arguments."""
 
-	def _run(self, replies, text="what is a purchase invoice?"):
+	def _run(self, replies, text="what is a purchase invoice?", planner=True):
 		from flow.lib.agent import Agent, Done
 		from flow.lib.tool import tool
 
@@ -1266,7 +1266,8 @@ class TestPlanner(IntegrationTestCase):
 		model = FakeModel([r if isinstance(r, ChatResponse) else ChatResponse(content=r) for r in replies])
 		model.model_id = "webllm/test-model"
 		frappe.conf.flow_scope_check = 0
-		self.addCleanup(lambda: frappe.conf.pop("flow_scope_check", None))
+		frappe.conf.flow_planner = 1 if planner else 0
+		self.addCleanup(lambda: [frappe.conf.pop(k, None) for k in ("flow_scope_check", "flow_planner")])
 		events = list(Agent(model=model, tools=[alpha, beta]).run(text, stream=True))
 		return model, next(e.result for e in events if isinstance(e, Done))
 
@@ -1281,10 +1282,8 @@ class TestPlanner(IntegrationTestCase):
 		model, result = self._run(["none", "Plain answer."])
 		self.assertEqual((result.output, result.tool_calls), ("Plain answer.", []))
 
-	def test_the_site_can_switch_the_planner_off(self):
-		frappe.conf.flow_planner = 0
-		self.addCleanup(lambda: frappe.conf.pop("flow_planner", None))
-		model, result = self._run(["Direct."])
+	def test_the_exact_routes_decide_unless_the_site_turns_the_planner_on(self):
+		model, result = self._run(["Direct."], planner=False)
 		self.assertEqual([c.name for c in result.tool_calls], ["alpha"])
 
 

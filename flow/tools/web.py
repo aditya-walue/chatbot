@@ -360,9 +360,10 @@ def _format_section(section: dict[str, Any]) -> str:
 def docs_howto(
 	topic: Annotated[str, 'Search words for the docs, e.g. "convert lead to deal".'],
 ) -> dict[str, Any]:
-	"""Answer a how-to question from the Frappe / ERPNext docs (docs.frappe.io): the part of the
-	best page that matches, and its link. When the docs have nothing on it, the web search results
-	instead. Use frappe_docs instead when you want to read the page yourself."""
+	"""Last resort for a how-to about a feature or setting that no other tool covers: the part of the
+	docs.frappe.io page that matches, and its link. Not for creating, assigning or changing the
+	status of a record type of this site, listing, counting or errors: those have their own tools.
+	Use frappe_docs instead when you want to read the page yourself."""
 	if _turned_off():
 		raise ValueError("Looking things up online is turned off on this site.")
 	if not any(c.isalpha() for c in str(topic or "")):
