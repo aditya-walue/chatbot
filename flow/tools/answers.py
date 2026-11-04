@@ -296,7 +296,7 @@ def _scope(words: str) -> set[str] | None:
 # "how many leads in Frappe CRM", "total deals per stage"
 COUNT_PREFIX = re.compile(
 	r"^\s*(?:please\s+)?(?:how\s+many|count(?:\s+of)?(?:\s+the)?|(?:the\s+)?number\s+of|"
-	r"what\s+(?:is|are)\s+the\s+(?:total\s+)?(?:number|count)\s+of|what\s+(?:is|are)\s+the\s+total|"
+	r"what\s+(?:is|are)\s+the\s+(?:total\s+)?(?:number|count)\s+of|what\s+(?:is|are)\s+the\s+total(?:\s+of)?|"
 	r"(?:give\s+me\s+)?(?:the\s+)?total(?:\s+number)?(?:\s+of)?)\s+(?:total\s+)?(?:(?:the|all)\s+)?",
 	re.IGNORECASE,
 )
@@ -312,11 +312,28 @@ COUNT_TAIL = re.compile(
 	re.IGNORECASE,
 )
 def count_arguments(text: str) -> dict[str, Any] | None:
-	"""count() arguments for a count question, or None."""
+	"""count() arguments for a count question, or None. "The total of sales invoices" is a sum
+	for a record type with an amount (see total_arguments), a count for one without ("total leads")."""
+	arguments, sums = _counted_target(text)
+	return None if sums else arguments
+
+
+def total_arguments(text: str) -> dict[str, Any] | None:
+	"""total() arguments for "the total of <records>" on a record type that has an amount to add up."""
+	arguments, sums = _counted_target(text)
+	if not (arguments and sums):
+		return None
+	return {k: v for k, v in arguments.items() if k in ("doctype", "filters")}
+
+
+def _counted_target(text: str) -> tuple[dict[str, Any] | None, bool]:
+	"""(the records a count-or-total question names, whether it asks for their sum). It asks for the
+	sum when it says "total" without "number" or "count", has no breakdown, and the record type has
+	an amount field."""
 	clean = re.sub(r"[?!.,;]+", " ", text or "")
 	match = COUNT_PREFIX.match(clean)
 	if not match:
-		return None
+		return None, False
 	rest = clean[match.end() :]
 	group = GROUP_WORDS.search(rest)
 	group_word = None
@@ -333,14 +350,16 @@ def count_arguments(text: str) -> dict[str, Any] | None:
 			rest = rest[: in_match.start()]
 	arguments = list_target(rest, scope=scope)
 	if not arguments:
-		return None
+		return None, False
 	if group_word:
 		field = _group_field(arguments["doctype"], group_word)
 		if not field:
-			return None  # an unknown breakdown: let the model interpret it
+			return None, False  # an unknown breakdown: let the model interpret it
 		arguments["group_by"] = field
 	arguments.pop("order_by", None)
-	return arguments
+	said = match.group(0).lower().split()
+	sums = "total" in said and not {"number", "count"} & set(said) and not group_word and bool(_amount_field(arguments["doctype"]))
+	return arguments, sums
 
 
 def _group_field(doctype: str, word: str) -> str | None:
@@ -686,7 +705,7 @@ def _amount_field(doctype: str) -> str | None:
 	return chosen.fieldname if chosen else None
 
 
-@tool(final_answer=True, precheck=lambda args, context=None: _builtins()._precheck_query(args))
+@tool(final_answer=True, route=lambda text: total_arguments(text), precheck=lambda args, context=None: _builtins()._precheck_query(args))
 def total(
 	doctype: DocTypeArg,
 	field: Annotated[str | None, 'Numeric fieldname to add up, e.g. "grand_total". Omit for the amount the record type is known by.'] = None,

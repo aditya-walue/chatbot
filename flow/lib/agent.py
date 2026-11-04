@@ -1045,7 +1045,9 @@ def _brief(text: str, limit: int = 220) -> str:
 # The question the browser model is asked to pick the docs section that answers a how-to.
 DOCS_PICK = (
 	"You pick which numbered documentation section answers the user's question. Answer with its "
-	"number only. Answer 0 if none of them answers the question."
+	"number only. Choose the section about the action or topic asked (the heading says it), even "
+	"when it explains it for several kinds of document and the user named only one. Answer 0 only "
+	"if every section is about something else."
 )
 
 # Words of a message looked at for record types: each window is a lookup, and a long paste is no question.

@@ -274,6 +274,20 @@ class TestTotalsAndTrailingStatus(IntegrationTestCase):
 			field = frappe.get_meta("Sales Invoice").get_field(_amount_field("Sales Invoice"))
 			self.assertEqual(field.fieldtype, "Currency")
 
+	def test_a_total_of_a_record_type_with_an_amount_is_a_sum_not_a_count(self):
+		from flow.tools.answers import count_arguments, total_arguments
+
+		self.assertEqual(total_arguments("what is the total of sales invoices?"), {"doctype": "Sales Invoice"})
+		self.assertIsNone(count_arguments("what is the total of sales invoices?"))
+		self.assertEqual(count_arguments("total number of sales invoices"), {"doctype": "Sales Invoice"})
+		self.assertIsNone(total_arguments("how many sales invoices"))
+		self.assertEqual(count_arguments("what is the total of todos"), {"doctype": "ToDo"})  # nothing to add up
+
+	def test_a_record_type_ending_in_entries_is_not_cut_short(self):
+		from flow.tools.builtins import _doctype_from_phrase
+
+		self.assertEqual(_doctype_from_phrase("stock entries"), "Stock Entry")
+
 	def test_total_adds_the_field_over_the_matching_records(self):
 		from unittest.mock import patch
 

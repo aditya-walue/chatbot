@@ -889,17 +889,20 @@ def _doctype_from_phrase(phrase: str, fuzzy: bool = False) -> str | None:
 	"""The readable, non-child DocType a phrase names, allowing plurals ("sales invoices",
 	"employees", "entries") and a trailing "record(s)". With `fuzzy`, also a misspelling
 	("employyes", "sales invocies") when one DocType is clearly the closest; None otherwise."""
-	words = re.sub(r"\s+", " ", (phrase or "").strip().lower())
-	words = re.sub(r"\s+(records?|entries|documents?)$", "", words)
+	whole = re.sub(r"\s+", " ", (phrase or "").strip().lower())
+	# "entries" can end a DocType's own name ("stock entries"), so the whole phrase is tried first.
+	words = re.sub(r"\s+(records?|entries|documents?)$", "", whole)
 	if not words:
 		return None
-	candidates = [words]
-	if words.endswith("ies"):
-		candidates.append(words[:-3] + "y")
-	if words.endswith("es"):
-		candidates.append(words[:-2])
-	if words.endswith("s"):
-		candidates.append(words[:-1])
+	candidates: list[str] = []
+	for phrase_form in dict.fromkeys([whole, words]):
+		candidates.append(phrase_form)
+		if phrase_form.endswith("ies"):
+			candidates.append(phrase_form[:-3] + "y")
+		if phrase_form.endswith("es"):
+			candidates.append(phrase_form[:-2])
+		if phrase_form.endswith("s"):
+			candidates.append(phrase_form[:-1])
 	names = _doctype_names()
 	for candidate in candidates:
 		doctype = names.get(candidate)
